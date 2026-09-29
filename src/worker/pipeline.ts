@@ -5,8 +5,10 @@ import { log } from "../lib/log";
 import { getKv, setKv } from "../lib/kv";
 import { getAccountState, tryClient } from "../lib/account";
 import { getInstrumentsCached } from "../lib/t212/instruments";
-import { screenUniverse, type Candidate } from "../lib/quant/screener";
+import { screenUniverse, scoreSymbols, attachEarnings, type Candidate } from "../lib/quant/screener";
 import { researchCandidate } from "../lib/quant/research";
+import { freshResearchOf, getKnowledge, provenSymbols, recordResearch } from "../lib/quant/knowledge";
+import type { QuantTuning } from "../lib/quant/tuning";
 import { getRegime } from "../lib/quant/regime";
 import { decide } from "../lib/quant/decide";
 import { loadModel } from "../lib/quant/model";
@@ -59,11 +61,12 @@ export async function stageScreen(runId: number): Promise<void> {
       nextOpenWeekday: nextOpenWeekday(),
       tuning,
     });
-    if (shortlist.length === 0) throw new Error("Screener found no liquid candidates");
-    await log("info", "pipeline", `Shortlist (${run.market}): ${shortlist.map((c) => c.ticker).join(", ")}`, runId);
+    const boosted = await boostFromKnowledge(shortlist, run.market, tuning, runId);
+    if (boosted.length === 0) throw new Error("Screener found no liquid candidates");
+    await log("info", "pipeline", `Shortlist (${run.market}): ${boosted.map((c) => c.ticker).join(", ")}`, runId);
     await db.delete(candidates).where(eq(candidates.runId, runId));
     await db.insert(candidates).values(
-      shortlist.map((c) => ({
+      boosted.map((c) => ({
         runId,
         ticker: c.ticker,
         name: c.name,
@@ -75,6 +78,38 @@ export async function stageScreen(runId: number): Promise<void> {
     await setRunStatus(runId, "researching");
   } catch (err) {
     await fail(runId, err);
+  }
+}
+
+/**
+ * Give the shortlist a few extra slots for names the knowledge base has watched over many rounds
+ * and consistently rated well, even if tonight's screen ranked them just outside. Their signals are
+ * recomputed from fresh prices here - only the decision to look at them comes from the stored
+ * record, never the numbers the model is judged on.
+ */
+async function boostFromKnowledge(shortlist: Candidate[], market: "US" | "UK", tuning: QuantTuning, runId: number): Promise<Candidate[]> {
+  if (tuning.knowledgeBoostCount <= 0) return shortlist;
+  try {
+    const have = new Set(shortlist.map((c) => c.ticker));
+    const proven = await provenSymbols(market, {
+      minObservations: tuning.minObservationsToTrust,
+      limit: tuning.knowledgeBoostCount,
+      exclude: have,
+    });
+    if (proven.length === 0) return shortlist;
+
+    const extra = await scoreSymbols(
+      proven.map((r) => ({ ticker: r.ticker, name: r.name ?? r.ticker, yahoo: r.symbol })),
+      { market, nextOpenWeekday: nextOpenWeekday(), tuning },
+    );
+    if (extra.length === 0) return shortlist;
+    await attachEarnings(extra);
+    await log("info", "pipeline", `Knowledge base added ${extra.map((c) => c.ticker).join(", ")} to the shortlist.`, runId);
+    return [...shortlist, ...extra];
+  } catch (err) {
+    // The base is an enhancement; a failure here must not cost us the night's trade.
+    await log("warn", "pipeline", `Knowledge boost skipped: ${String(err).slice(0, 200)}`, runId);
+    return shortlist;
   }
 }
 
@@ -106,17 +141,40 @@ export async function stageResearch(runId: number, deadline: number, concurrency
       .from(candidates)
       .where(and(eq(candidates.runId, runId), isNull(candidates.researchSummary)))
       .orderBy(asc(candidates.id));
+
+    // Anything the all-day study already researched recently is reused as-is. That is the point of
+    // the knowledge base: the pre-close window is short, and every symbol served from here is one
+    // more that gets looked at properly before the close instead of being left unresearched.
+    const known = await getKnowledge(pending.map((r) => yahooOf(r)).filter(Boolean));
+    let reused = 0;
+    const toFetch: typeof pending = [];
+    for (const row of pending) {
+      const cached = freshResearchOf(known.get(yahooOf(row)), researchTuning.knowledgeTtlHours);
+      if (!cached) {
+        toFetch.push(row);
+        continue;
+      }
+      await db
+        .update(candidates)
+        .set({ researchSummary: cached.summary, research: { ...cached, ticker: row.ticker } })
+        .where(eq(candidates.id, row.id));
+      reused++;
+    }
+    if (reused > 0) await log("info", "pipeline", `Reused already-studied research for ${reused} candidate(s).`, runId);
+
     let next = 0;
     await Promise.all(
-      Array.from({ length: Math.min(concurrency, pending.length) }, async () => {
-        while (next < pending.length && Date.now() < deadline) {
-          const row = pending[next++];
+      Array.from({ length: Math.min(concurrency, toFetch.length) }, async () => {
+        while (next < toFetch.length && Date.now() < deadline) {
+          const row = toFetch[next++];
           try {
             const { research, analogueSnapshot } = await researchCandidate(asCandidate(row, run.market), researchTuning);
             await db
               .update(candidates)
               .set({ researchSummary: research.summary, research: { ...research, analogue: analogueSnapshot } })
               .where(eq(candidates.id, row.id));
+            // Fold it back into the base so the next run does not have to fetch it again.
+            await recordResearch(yahooOf(row), { ...research, analogue: analogueSnapshot }).catch(() => {});
           } catch (err) {
             const msg = String(err).slice(0, 200);
             await log("warn", "pipeline", `Research failed ${row.ticker}: ${msg}`, runId);
@@ -134,6 +192,10 @@ export async function stageResearch(runId: number, deadline: number, concurrency
   } catch (err) {
     await fail(runId, err);
   }
+}
+
+function yahooOf(row: typeof candidates.$inferSelect): string {
+  return String(((row.signals ?? {}) as Record<string, unknown>).yahoo ?? "");
 }
 
 function asCandidate(row: typeof candidates.$inferSelect, market: "US" | "UK"): Candidate {

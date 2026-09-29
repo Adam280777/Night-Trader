@@ -2,17 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { SlidersHorizontal } from "lucide-react";
 import type { Settings } from "@/lib/config";
-import {
-  DEFAULT_TUNING,
-  GROUP_META,
-  PARAMS_BY_GROUP,
-  TUNING_GROUPS,
-  TUNING_PRESETS,
-  type QuantTuning,
-  type TuningGroup,
-  type TuningParam,
-} from "@/lib/quant/tuning";
+import { DEFAULT_TUNING, TUNING_PARAMS } from "@/lib/quant/tuning";
 
 interface Props {
   settings: Settings;
@@ -20,7 +13,7 @@ interface Props {
   hasT212Keys: boolean;
 }
 
-function Row({ label, hint, children }: { label: React.ReactNode; hint?: string; children: React.ReactNode }) {
+export function Row({ label, hint, children }: { label: React.ReactNode; hint?: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border py-3 last:border-0">
       <div className="max-w-md">
@@ -32,7 +25,7 @@ function Row({ label, hint, children }: { label: React.ReactNode; hint?: string;
   );
 }
 
-function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+export function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
     <button role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)} className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-border"}`}>
       <span className={`absolute top-0.5 size-5 rounded-full bg-white transition-all ${on ? "left-[22px]" : "left-0.5"}`} />
@@ -40,7 +33,7 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
   );
 }
 
-function Num({
+export function Num({
   value,
   onCommit,
   step = 1,
@@ -84,50 +77,11 @@ function Num({
   );
 }
 
-/** One tunable engine parameter, rendered from its registry entry. */
-function TuningRow({ param, tuning, onChange }: { param: TuningParam; tuning: QuantTuning; onChange: (patch: Partial<QuantTuning>) => void }) {
-  const raw = tuning[param.key];
-  const changed = raw !== DEFAULT_TUNING[param.key];
-
-  const label = (
-    <span className="inline-flex items-center gap-2">
-      {param.label}
-      {changed && <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-accent uppercase">changed</span>}
-    </span>
-  );
-
-  if (param.kind === "boolean") {
-    return (
-      <Row label={label} hint={param.hint}>
-        <Toggle on={raw as boolean} onChange={(v) => onChange({ [param.key]: v } as Partial<QuantTuning>)} label={param.label} />
-      </Row>
-    );
-  }
-
-  // Metadata min/max/step are already expressed in display units, so only the value is scaled.
-  const scale = param.scale ?? 1;
-  const shown = Math.round((raw as number) * scale * 1000) / 1000;
-
-  return (
-    <Row label={label} hint={param.hint}>
-      <Num
-        value={shown}
-        step={param.step}
-        min={param.min}
-        max={param.max}
-        suffix={param.unit}
-        onCommit={(v) => onChange({ [param.key]: v / scale } as Partial<QuantTuning>)}
-      />
-    </Row>
-  );
-}
-
 export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
   const router = useRouter();
   const [s, setS] = useState(settings);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [confirm, setConfirm] = useState("");
-  const [open, setOpen] = useState<Record<string, boolean>>({ engine: true });
 
   async function save(patch: Record<string, unknown>) {
     setMsg(null);
@@ -139,13 +93,8 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
     router.refresh();
   }
 
-  const saveQuant = (patch: Partial<QuantTuning>) => save({ quant: patch });
   const asPct = (v: number) => Math.round(v * 1000) / 10;
-
-  const tuning = s.quant;
-  const changedCount = (group: TuningGroup) => PARAMS_BY_GROUP(group).filter((p) => tuning[p.key] !== DEFAULT_TUNING[p.key]).length;
-  const resetGroup = (group: TuningGroup) =>
-    saveQuant(Object.fromEntries(PARAMS_BY_GROUP(group).map((p) => [p.key, DEFAULT_TUNING[p.key]])) as Partial<QuantTuning>);
+  const tunedCount = TUNING_PARAMS.filter((p) => s.quant[p.key] !== DEFAULT_TUNING[p.key]).length;
 
   return (
     <div className="space-y-6">
@@ -214,66 +163,6 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
       </section>
 
       <section className="rounded-xl border border-border bg-surface p-5">
-        <h2 className="text-sm font-semibold tracking-wide text-muted uppercase">Quant model</h2>
-        <p className="mt-1 text-xs text-muted">
-          Every number the decision engine uses. Changes apply to the next run, so nothing already in flight is affected. Each
-          section can be reset on its own, and anything you have moved away from its shipped value is marked.
-        </p>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          {Object.entries(TUNING_PRESETS).map(([id, preset]) => (
-            <button
-              key={id}
-              onClick={() => saveQuant(preset.values)}
-              title={preset.blurb}
-              className="rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:border-accent hover:text-accent"
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
-        <p className="mt-2 text-xs text-muted">
-          Presets overwrite the values they cover. {TUNING_PRESETS.balanced.blurb}
-        </p>
-
-        <div className="mt-4 space-y-3">
-          {TUNING_GROUPS.map((group) => {
-            const meta = GROUP_META[group];
-            const n = changedCount(group);
-            const isOpen = open[group] ?? false;
-            return (
-              <div key={group} className="rounded-lg border border-border">
-                <button
-                  onClick={() => setOpen((o) => ({ ...o, [group]: !isOpen }))}
-                  aria-expanded={isOpen}
-                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-                >
-                  <span>
-                    <span className="text-sm font-medium">{meta.title}</span>
-                    {n > 0 && <span className="ml-2 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">{n} changed</span>}
-                    <span className="mt-0.5 block text-xs text-muted">{meta.blurb}</span>
-                  </span>
-                  <span className="shrink-0 text-muted">{isOpen ? "−" : "+"}</span>
-                </button>
-                {isOpen && (
-                  <div className="border-t border-border px-4 pb-3">
-                    {PARAMS_BY_GROUP(group).map((p) => (
-                      <TuningRow key={p.key} param={p} tuning={tuning} onChange={saveQuant} />
-                    ))}
-                    <div className="pt-3">
-                      <button onClick={() => resetGroup(group)} className="text-xs text-muted underline underline-offset-2 hover:text-fg">
-                        Reset this section to defaults
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-border bg-surface p-5">
         <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Timing</h2>
         <Row label="Start researching" hint="Minutes before the market closes.">
           <Num value={s.minutesBeforeCloseToResearch} onCommit={(v) => save({ minutesBeforeCloseToResearch: v })} suffix="min before close" />
@@ -285,6 +174,25 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
           <Num value={s.approvalWindowMinutes} onCommit={(v) => save({ approvalWindowMinutes: v })} suffix="min" />
         </Row>
       </section>
+
+      <Link
+        href="/quant"
+        className="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface p-5 transition-colors hover:border-accent"
+      >
+        <span>
+          <span className="flex items-center gap-2 text-sm font-semibold">
+            <SlidersHorizontal className="size-4 text-accent" aria-hidden />
+            Quant settings
+          </span>
+          <span className="mt-1 block max-w-2xl text-xs text-muted">
+            Every number inside the decision engine itself — how it sizes, what it charges for costs, how wide it screens, how
+            hard it studies, and what it refuses outright. {tunedCount === 0 ? "All at their shipped values." : `${tunedCount} changed from the shipped values.`}
+          </span>
+        </span>
+        <span aria-hidden className="shrink-0 text-muted">
+          →
+        </span>
+      </Link>
     </div>
   );
 }

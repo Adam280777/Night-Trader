@@ -33,17 +33,24 @@ export const SettingsSchema = z.object({
 export type Settings = z.infer<typeof SettingsSchema>;
 
 /**
- * A patch may touch a single key inside `quant` or `markets`, so those are deep-partial here and
- * merged a level down in `updateSettings`. Validating them with the full schema instead would
- * silently backfill every untouched key with its default.
+ * Every field above carries a `.default()`, and `.partial()` only makes a key *optional* - the
+ * default still fires when the key is absent. Parsing a one-key patch with it therefore returns a
+ * fully populated object, and `updateSettings` would write all of those defaults back, so changing
+ * one toggle silently reset every other setting. Strip the defaults instead, recursively, so a
+ * patch parses to exactly the keys it was given while still being type-checked.
  */
-export const SettingsPatchSchema = SettingsSchema.omit({ quant: true, markets: true })
-  .partial()
-  .extend({
-    quant: QuantTuningSchema.partial().optional(),
-    markets: z.object({ US: z.boolean(), UK: z.boolean() }).partial().optional(),
-  });
-export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
+function stripDefaults(schema: z.ZodType): z.ZodType {
+  if (schema instanceof z.ZodDefault) return stripDefaults(schema.def.innerType as z.ZodType);
+  if (schema instanceof z.ZodOptional) return stripDefaults(schema.def.innerType as z.ZodType).optional();
+  if (schema instanceof z.ZodObject) {
+    const shape = Object.fromEntries(Object.entries(schema.shape).map(([k, v]) => [k, stripDefaults(v as z.ZodType).optional()]));
+    return z.object(shape);
+  }
+  return schema;
+}
+
+export type SettingsPatch = { [K in keyof Settings]?: Settings[K] extends object ? Partial<Settings[K]> : Settings[K] };
+export const SettingsPatchSchema = stripDefaults(SettingsSchema) as z.ZodType<SettingsPatch>;
 
 /** The engine's tuning, read straight from settings. */
 export async function getTuning() {

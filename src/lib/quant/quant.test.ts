@@ -459,6 +459,17 @@ describe("tuning registry", () => {
     }
   });
 
+  it("puts at least one parameter in every group, so no section renders empty", () => {
+    for (const group of TUNING_GROUPS) {
+      expect(TUNING_PARAMS.filter((p) => p.group === group).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("exposes the continuous study controls", () => {
+    expect(DEFAULT_TUNING.continuousResearch).toBe(true);
+    expect(TUNING_PARAMS.filter((p) => p.group === "study").map((p) => p.key)).toContain("studyIntervalMinutes");
+  });
+
   it("presets are ordered from cautious to aggressive", () => {
     const k = (id: keyof typeof TUNING_PRESETS) => ({ ...DEFAULT_TUNING, ...TUNING_PRESETS[id].values }).kellyFraction;
     expect(k("cautious")).toBeLessThan(k("balanced"));

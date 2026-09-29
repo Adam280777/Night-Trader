@@ -1,13 +1,19 @@
 import { NextResponse } from "next/server";
-import { asc } from "drizzle-orm";
+import { asc, lt } from "drizzle-orm";
 import { getDb, schema } from "@/lib/db";
+import { currentSession } from "@/lib/chat";
 import { answerQuestion } from "@/lib/quant/assistant";
 
 export const dynamic = "force-dynamic";
 
+/** Old conversations are dropped outright; the model answers from its records, not the chat log. */
+const RETAIN_MS = 30 * 86_400_000;
+
 export async function GET() {
-  const rows = await getDb().select().from(schema.chatMessages).orderBy(asc(schema.chatMessages.id)).limit(200);
-  return NextResponse.json(rows);
+  const db = getDb();
+  await db.delete(schema.chatMessages).where(lt(schema.chatMessages.createdAt, new Date(Date.now() - RETAIN_MS)));
+  const rows = await db.select().from(schema.chatMessages).orderBy(asc(schema.chatMessages.id)).limit(200);
+  return NextResponse.json(currentSession(rows));
 }
 
 export async function POST(req: Request) {
@@ -23,4 +29,10 @@ export async function POST(req: Request) {
   } catch (err) {
     return NextResponse.json({ error: String(err).slice(0, 300) }, { status: 502 });
   }
+}
+
+/** Clear the conversation. The model's knowledge lives in its own records, so nothing is lost. */
+export async function DELETE() {
+  await getDb().delete(schema.chatMessages);
+  return NextResponse.json({ ok: true });
 }

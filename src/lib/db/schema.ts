@@ -204,6 +204,41 @@ export const eventLog = sqliteTable("event_log", {
   runId: integer("run_id"),
 });
 
+/**
+ * What the model has learned about individual symbols by studying them continuously, rather than
+ * only in the minutes before a close. One row per symbol, refreshed as the study rotation comes
+ * back around, so a decision can draw on research that was already done instead of starting cold.
+ */
+export const knowledge = sqliteTable(
+  "knowledge",
+  {
+    symbol: text("symbol").primaryKey(), // Yahoo symbol
+    ticker: text("ticker").notNull(), // Trading 212 ticker
+    name: text("name"),
+    market: text("market", { enum: ["US", "UK"] }).notNull(),
+    price: real("price"),
+    screenScore: real("screen_score"),
+    /** Rolling mean and best of `screenScore` across every round this symbol has appeared in. */
+    avgScore: real("avg_score"),
+    bestScore: real("best_score"),
+    /** How many study rounds have scored this symbol. Consistency is worth more than one good night. */
+    observations: integer("observations").notNull().default(0),
+    signals: text("signals", { mode: "json" }).$type<Record<string, number | string | boolean | null>>(),
+    research: text("research", { mode: "json" }),
+    summary: text("summary"),
+    sentiment: real("sentiment"),
+    newsBurst: real("news_burst"),
+    overnightRisk: text("overnight_risk"),
+    /** When research was last refreshed; null means signals only so far. */
+    researchedAt: integer("researched_at", { mode: "timestamp_ms" }),
+    firstSeenAt: createdAt(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [index("knowledge_market_score").on(t.market, t.screenScore), index("knowledge_updated").on(t.updatedAt)],
+);
+
 export const chatMessages = sqliteTable("chat_messages", {
   id: id(),
   role: text("role", { enum: ["user", "assistant"] }).notNull(),

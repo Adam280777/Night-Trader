@@ -148,6 +148,96 @@ export function scoreSignals(s: Omit<Signals, "earningsWithin2d">): number {
   );
 }
 
+export interface SymbolRef {
+  ticker: string;
+  name: string;
+  yahoo: string;
+  type?: string;
+  currency?: string;
+}
+
+export interface ScoreOpts {
+  market: Market;
+  /** Weekday (0-6, UTC) of the open we are trading into. */
+  nextOpenWeekday: number;
+  tuning?: QuantTuning;
+  /** Applied to the quote before any history is fetched. Omit to score every symbol given. */
+  minDollarVolume?: number;
+  minMarketCap?: number;
+  /** Keep only this many of the most liquid names after the quote filter. */
+  poolCap?: number;
+  concurrency?: number;
+}
+
+/**
+ * Score an explicit list of symbols: one bulk quote call, an optional liquidity filter, then daily
+ * bars and signals for whatever survives. Shared by the nightly screen and the all-day study so
+ * both judge a name by exactly the same arithmetic.
+ */
+export async function scoreSymbols(items: SymbolRef[], o: ScoreOpts): Promise<Candidate[]> {
+  const t = o.tuning ?? DEFAULT_TUNING;
+  if (items.length === 0) return [];
+  const quotes = await getQuotes(items.map((i) => i.yahoo));
+
+  let withQuotes = items
+    .map((i) => ({ i, q: quotes.get(i.yahoo) }))
+    .filter((p): p is { i: SymbolRef; q: Quote } => !!p.q);
+
+  if (o.minDollarVolume !== undefined || o.minMarketCap !== undefined) {
+    withQuotes = withQuotes.filter((p) => {
+      // GBp/GBX quotes are in pence, so convert before comparing against a pounds threshold.
+      const price = p.q.currency === "GBp" || p.q.currency === "GBX" ? p.q.price / 100 : p.q.price;
+      if (price < 1) return false;
+      if (o.minDollarVolume !== undefined && p.q.avgVolume3m * price < o.minDollarVolume) return false;
+      if (o.minMarketCap !== undefined && (p.q.marketCap ?? 0) < o.minMarketCap) return false;
+      return true;
+    });
+  }
+
+  if (o.poolCap !== undefined) {
+    withQuotes = withQuotes.sort((a, b) => b.q.avgVolume3m * b.q.price - a.q.avgVolume3m * a.q.price).slice(0, o.poolCap);
+  }
+
+  const scored: Candidate[] = [];
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(o.concurrency ?? 4, withQuotes.length) }, async () => {
+      while (next < withQuotes.length) {
+        const p = withQuotes[next++];
+        try {
+          const bars = await getDailyBars(p.i.yahoo, t.historyBars);
+          const sig = computeSignals(bars, p.q, o.nextOpenWeekday);
+          if (!sig) continue;
+          scored.push({
+            ticker: p.i.ticker,
+            name: p.i.name,
+            yahoo: p.i.yahoo,
+            market: o.market,
+            type: p.i.type ?? "STOCK",
+            currency: p.i.currency ?? p.q.currency ?? "",
+            price: p.q.price,
+            signals: { ...sig, earningsWithin2d: false },
+            score: scoreSignals(sig),
+          });
+        } catch {
+          /* skip symbols Yahoo can't serve */
+        }
+      }
+    }),
+  );
+  return scored.sort((a, b) => b.score - a.score);
+}
+
+/** Earnings inside the next two sessions makes the overnight distribution two-tailed, so it is looked up per candidate. */
+export async function attachEarnings(cands: Candidate[]): Promise<void> {
+  await Promise.all(
+    cands.map(async (c) => {
+      const d = await getNextEarnings(c.yahoo);
+      c.signals.earningsWithin2d = !!d && d.getTime() - Date.now() < 2 * 86_400_000 && d.getTime() > Date.now() - 86_400_000;
+    }),
+  );
+}
+
 interface ScreenOpts {
   market: Market;
   minDollarVolume: number;
@@ -160,54 +250,30 @@ interface ScreenOpts {
 
 export async function screenUniverse(instruments: TradableInstrument[], o: ScreenOpts): Promise<Candidate[]> {
   const t = o.tuning ?? DEFAULT_TUNING;
-  const pool = instruments
-    .filter((i) => (i.type === "STOCK" || i.type === "ETF") && marketOf(i) === o.market)
-    .filter((i) => !o.excludeTickers?.has(i.ticker))
-    .map((i) => ({ i, y: yahooSymbol(i) }))
-    .filter((x): x is { i: TradableInstrument; y: string } => !!x.y);
+  const pool = universeOf(instruments, o.market, o.excludeTickers);
 
-  const quotes = await getQuotes(pool.map((p) => p.y));
+  const scored = await scoreSymbols(pool, {
+    market: o.market,
+    nextOpenWeekday: o.nextOpenWeekday,
+    tuning: t,
+    minDollarVolume: o.minDollarVolume,
+    minMarketCap: t.minMarketCap,
+    poolCap: t.candidatePoolSize,
+  });
 
-  // Stage 1: cheap liquidity filter on quotes alone.
-  const liquid = pool
-    .map((p) => ({ ...p, q: quotes.get(p.y) }))
-    .filter((p): p is typeof p & { q: Quote } => !!p.q)
-    .filter((p) => {
-      const price = p.q.currency === "GBp" || p.q.currency === "GBX" ? p.q.price / 100 : p.q.price;
-      return price >= 1 && p.q.avgVolume3m * price >= o.minDollarVolume && (p.q.marketCap ?? 0) >= t.minMarketCap;
-    })
-    .sort((a, b) => b.q.avgVolume3m * b.q.price - a.q.avgVolume3m * a.q.price)
-    .slice(0, t.candidatePoolSize);
-
-  // Stage 2: history-based signals for the most liquid names.
-  const scored: Candidate[] = [];
-  for (const p of liquid) {
-    try {
-      const bars = await getDailyBars(p.y, t.historyBars);
-      const sig = computeSignals(bars, p.q, o.nextOpenWeekday);
-      if (!sig) continue;
-      scored.push({
-        ticker: p.i.ticker,
-        name: p.i.name,
-        yahoo: p.y,
-        market: o.market,
-        type: p.i.type,
-        currency: p.i.currencyCode,
-        price: p.q.price,
-        signals: { ...sig, earningsWithin2d: false },
-        score: scoreSignals(sig),
-      });
-    } catch {
-      /* skip symbols Yahoo can't serve */
-    }
-  }
-
-  const top = scored.sort((a, b) => b.score - a.score).slice(0, o.shortlist);
-  await Promise.all(
-    top.map(async (c) => {
-      const d = await getNextEarnings(c.yahoo);
-      c.signals.earningsWithin2d = !!d && d.getTime() - Date.now() < 2 * 86_400_000 && d.getTime() > Date.now() - 86_400_000;
-    }),
-  );
+  const top = scored.slice(0, o.shortlist);
+  await attachEarnings(top);
   return top;
+}
+
+/** Every tradable name in a market, in a stable order so a study rotation can page through it. */
+export function universeOf(instruments: TradableInstrument[], market: Market, exclude?: Set<string>): SymbolRef[] {
+  return instruments
+    .filter((i) => (i.type === "STOCK" || i.type === "ETF") && marketOf(i) === market)
+    .filter((i) => !exclude?.has(i.ticker))
+    .flatMap((i) => {
+      const yahoo = yahooSymbol(i);
+      return yahoo ? [{ ticker: i.ticker, name: i.name, yahoo, type: i.type, currency: i.currencyCode }] : [];
+    })
+    .sort((a, b) => a.ticker.localeCompare(b.ticker));
 }

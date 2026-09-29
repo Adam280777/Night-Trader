@@ -13,6 +13,7 @@ import { executeBuy } from "./execute";
 import { executeExit } from "./exit";
 import { scoreOutcomes } from "./outcomes";
 import { runLearningCycle } from "../lib/quant/learn";
+import { studyRound } from "./study";
 
 const { runs, decisions, trades, equitySnapshots, orders, candidates } = schema;
 
@@ -31,11 +32,14 @@ export const TICK_BUDGET_MS = 270_000;
 const RESEARCH_CUTOFF_MS = 210_000;
 /** The decision itself is local arithmetic, so it only needs room for the account/guardrail calls. */
 const DECIDE_MIN_REMAINING_MS = 25_000;
+/** Studying gets whatever is left of the tick, and is cut off well before the function limit. */
+const STUDY_CUTOFF_MS = 200_000;
 
 export interface TickResult {
   ran: boolean;
   skipped?: string;
   activeRuns?: number;
+  studied?: number;
 }
 
 async function warnOnce(key: string, message: string, runId: number | undefined, nowMs: number) {
@@ -248,7 +252,23 @@ export async function tick(deps: SchedulerDeps = realClock): Promise<TickResult>
         await warnOnce("housekeeping", `Housekeeping failed: ${String(err).slice(0, 200)}`, undefined, nowMs);
       }
     }
-    result = { ran: true, activeRuns: active.length };
+
+    // Study last, on whatever budget is left, so building the knowledge base can never delay a
+    // trade. A run that is mid-flight gets the tick to itself.
+    let studied: number | undefined;
+    const studyDeadline = startedAt + STUDY_CUTOFF_MS;
+    if (active.length === 0 && Date.now() < studyDeadline - 30_000) {
+      try {
+        const settings = await getSettings();
+        if (await every("study", minutes(settings.quant.studyIntervalMinutes), nowMs)) {
+          const r = await studyRound(studyDeadline);
+          if (r.ran) studied = r.scanned;
+        }
+      } catch (err) {
+        await warnOnce("study", `Study round failed: ${String(err).slice(0, 200)}`, undefined, nowMs);
+      }
+    }
+    result = { ran: true, activeRuns: active.length, studied };
   });
   return got ? result : { ran: false, skipped: "another tick is running" };
 }

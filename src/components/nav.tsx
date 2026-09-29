@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Brain, History, LayoutDashboard, LogOut, MessageCircle, Settings } from "lucide-react";
+import { Activity, Brain, History, LayoutDashboard, LogOut, MessageCircle, Radio, Settings, SlidersHorizontal } from "lucide-react";
 
 const ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/activity", label: "Live activity", icon: Radio },
   { href: "/history", label: "History", icon: History },
   { href: "/learning", label: "Learning", icon: Brain },
   { href: "/chat", label: "Ask the model", icon: MessageCircle },
+  { href: "/quant", label: "Quant settings", icon: SlidersHorizontal },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

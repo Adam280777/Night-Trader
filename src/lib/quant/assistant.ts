@@ -7,6 +7,7 @@ import { getActiveLessons, getPerformanceStats } from "./memory";
 import { getModelReport } from "./learn";
 import { FEATURE_BY_KEY } from "./features";
 import { roundTripCostPct } from "./costs";
+import { bestKnown, knowledgeStats, recentlyStudied } from "./knowledge";
 import { DEFAULT_TUNING, GROUP_META, TUNING_PARAMS, TUNING_GROUPS, type QuantTuning, type TuningParam } from "./tuning";
 import type { Evaluation } from "./schemas";
 
@@ -218,7 +219,7 @@ async function answerHow(): Promise<string> {
     "6. **Guardrails.** Position caps, minimum cash, daily and weekly loss breakers, cost checks, no leveraged products, and the kill switch all sit downstream and cannot be overridden by anything above.",
     "7. **Execute and learn.** Buy near the close, sell at the next open, then record the overnight return for *every* shortlisted name — picked or not. Those counterfactuals are what trains the model, so it gets sharper every single day.",
     "",
-    "Everything above runs inside this app on Vercel. There is no AI provider and no per-run cost, and every number in steps 2 to 5 is adjustable on the Settings page.",
+    "Everything above runs inside this app on Vercel. There is no AI provider and no per-run cost, and every number in steps 2 to 5 is adjustable on the Quant settings page.",
   ].join("\n");
 }
 
@@ -230,6 +231,7 @@ function answerHelp(): string {
     "- *How have we performed?* — win rate, averages, picks vs the rest of the shortlist",
     "- *Why did it pick AAPL?* or *why no trade?* — the actual numbers behind the decision",
     "- *Show the shortlist* — the latest run's candidates with probabilities and outcomes",
+    "- *What are you researching right now?* — the knowledge base and what study has covered",
     "- *What has the model learned?* — calibration, feature weights, mined rules",
     "- *What are you weighing most heavily?* — the features currently driving decisions",
     "- *How are you configured?* — every tuning parameter and anything moved off its default",
@@ -281,7 +283,7 @@ async function answerTuning(q: string): Promise<string> {
       "",
       one.hint,
       "",
-      `It lives under *${GROUP_META[one.group].title}* in Settings, and takes effect on the next run.`,
+      `It lives under *${GROUP_META[one.group].title}* on the Quant settings page, and takes effect on the next run.`,
     ].join("\n");
   }
 
@@ -298,7 +300,7 @@ async function answerTuning(q: string): Promise<string> {
   }
   lines.push(
     changedParams.length === 0
-      ? "Everything is on its shipped default. Ask me what any single setting does, or change it on the Settings page."
+      ? "Everything is on its shipped default. Ask me what any single setting does, or change it on the Quant settings page."
       : `${changedParams.length} setting${changedParams.length === 1 ? " is" : "s are"} away from the default. Ask *what does X do* for any of them.`,
   );
   return lines.join("\n");
@@ -354,10 +356,44 @@ async function answerCosts(): Promise<string> {
     .join("\n");
 }
 
+/** What the all-day study has been doing and what it currently knows. */
+async function answerStudy(): Promise<string> {
+  const tuning = (await getSettings()).quant;
+  if (!tuning.continuousResearch) {
+    return [
+      "**Continuous study is off.**",
+      "",
+      "Right now I only research in the window before a close, which means every night starts from nothing and I can only look at the handful of names that fit in that window.",
+      "Turning *Study all day* on under Continuous study in Quant settings lets me work through the universe all day and arrive at the close with the reading already done.",
+    ].join("\n");
+  }
+
+  const stats = await knowledgeStats();
+  if (stats.symbols === 0) {
+    return "I have not managed a study round yet, so the knowledge base is empty. Rounds run on spare capacity between scheduler ticks, so give it a few minutes.";
+  }
+
+  const recent = await recentlyStudied(6);
+  const best = await bestKnown(5);
+  return [
+    "**What I have been studying**",
+    `I know ${stats.symbols} symbol${stats.symbols === 1 ? "" : "s"}, ${stats.researched} of them with stored headline research. ${stats.studiedLastHour} were looked at in the last hour${stats.lastStudiedAt ? `, most recently ${stats.lastStudiedAt.toISOString().slice(11, 16)} UTC` : ""}.`,
+    "",
+    "Most recently studied:",
+    ...recent.map((k) => `- ${k.symbol} — score ${k.screenScore?.toFixed(2) ?? "—"}, seen ${k.observations}×${k.researchedAt ? ", researched" : ", signals only"}`),
+    "",
+    "Best average score so far:",
+    ...best.map((k) => `- ${k.symbol} — average ${k.avgScore?.toFixed(2) ?? "—"} over ${k.observations} sighting${k.observations === 1 ? "" : "s"}`),
+    "",
+    `Names averaging well over at least ${tuning.minObservationsToTrust} sightings can take up to ${tuning.knowledgeBoostCount} extra shortlist slot${tuning.knowledgeBoostCount === 1 ? "" : "s"} tonight, and stored research is reused for ${tuning.knowledgeTtlHours} hours before I refetch it.`,
+  ].join("\n");
+}
+
 const INTENTS: Intent[] = [
   { name: "help", test: /\b(help|what can you (do|answer)|commands)\b/i, run: async () => answerHelp() },
   { name: "whatif", test: /\b(what if|what would happen|if i (rais|lower|increas|decreas|turn|change|set)|should i (rais|lower|increas|decreas|change))\w*/i, run: answerWhatIf },
   { name: "how", test: /\b(how does (it|this|the system)|how do you (work|decide)|explain the (system|pipeline|process)|what do you do)\b/i, run: answerHow },
+  { name: "study", test: /\b(studying|studied|study|knowledge base|knowledge|(been|being) (researching|studying)|research(ing)? (now|right now|currently|today|so far)|what are you (doing|looking at|researching)|what have you (been )?(research|studi|learn|found))\w*/i, run: async () => answerStudy() },
   { name: "costs", test: /\b(cost|fee|commission|stamp duty|spread|slippage|fx|break ?even)\b/i, run: async () => answerCosts() },
   { name: "tuning", test: /\b(configur|tuning|parameter|setting|knob|dial|what does .* (do|mean)|how are you set)\w*/i, run: answerTuning },
   { name: "why", test: /\b(why|reason|thesis|justif|explain the (decision|pick|trade))\b/i, run: answerWhy },

@@ -56,12 +56,22 @@ export const QuantTuningSchema = z.object({
   newsHalfLifeHours: z.number().min(1).max(240).default(36),
   newsMaxHeadlines: z.number().int().min(5).max(50).default(20),
   newsSentimentWeight: z.number().min(0).max(3).default(1),
+
+  // --- Continuous study ------------------------------------------------------------------------
+  continuousResearch: z.boolean().default(true),
+  studyIntervalMinutes: z.number().int().min(1).max(240).default(10),
+  studyBatchSize: z.number().int().min(5).max(300).default(60),
+  studyResearchCount: z.number().int().min(0).max(40).default(8),
+  knowledgeTtlHours: z.number().min(1).max(168).default(12),
+  knowledgeRetentionDays: z.number().int().min(1).max(365).default(30),
+  knowledgeBoostCount: z.number().int().min(0).max(10).default(3),
+  minObservationsToTrust: z.number().int().min(1).max(50).default(3),
 });
 
 export type QuantTuning = z.infer<typeof QuantTuningSchema>;
 export const DEFAULT_TUNING: QuantTuning = QuantTuningSchema.parse({});
 
-export const TUNING_GROUPS = ["engine", "costs", "screening", "vetoes", "learning", "news"] as const;
+export const TUNING_GROUPS = ["engine", "costs", "screening", "study", "vetoes", "learning", "news"] as const;
 export type TuningGroup = (typeof TUNING_GROUPS)[number];
 
 export const GROUP_META: Record<TuningGroup, { title: string; blurb: string }> = {
@@ -76,6 +86,11 @@ export const GROUP_META: Record<TuningGroup, { title: string; blurb: string }> =
   screening: {
     title: "Screening and history",
     blurb: "How wide the net is cast each night and how much price history each name is judged against.",
+  },
+  study: {
+    title: "Continuous study",
+    blurb:
+      "The model researches all day rather than only before the close, building a knowledge base it can draw on the moment a decision is due. These control how hard it studies and how long what it learned stays fresh.",
   },
   vetoes: {
     title: "Hard vetoes",
@@ -484,6 +499,92 @@ export const TUNING_PARAMS: TuningParam[] = [
     max: 3,
     step: 0.1,
     unit: "×",
+  },
+
+  // Continuous study
+  {
+    key: "continuousResearch",
+    group: "study",
+    label: "Study all day",
+    hint: "When on, the model works through the universe continuously, scoring names and reading their headlines long before a decision is due, and stores what it finds. When off it only researches inside the pre-close window and starts every night from nothing.",
+    kind: "boolean",
+  },
+  {
+    key: "studyIntervalMinutes",
+    group: "study",
+    label: "Study every",
+    hint: "How often a study round runs. Study only ever uses time left over after live trading work, so shortening this makes it study more often but never delays a trade.",
+    kind: "number",
+    min: 1,
+    max: 240,
+    step: 1,
+    unit: "min",
+  },
+  {
+    key: "studyBatchSize",
+    group: "study",
+    label: "Names scanned per round",
+    hint: "How many symbols are pulled from the rotation and scored each round. Larger rounds cover the universe faster but each round takes longer.",
+    kind: "number",
+    min: 5,
+    max: 300,
+    step: 5,
+    unit: "symbols",
+  },
+  {
+    key: "studyResearchCount",
+    group: "study",
+    label: "Researched per round",
+    hint: "How many of each round's best-scoring names also get full headline and analogue research. This is the slow part; zero means the base stores price signals only.",
+    kind: "number",
+    min: 0,
+    max: 40,
+    step: 1,
+    unit: "symbols",
+  },
+  {
+    key: "knowledgeTtlHours",
+    group: "study",
+    label: "Research stays fresh for",
+    hint: "Stored research older than this is refetched rather than reused. Longer means less work and more reuse, at the cost of acting on staler headlines.",
+    kind: "number",
+    min: 1,
+    max: 168,
+    step: 1,
+    unit: "hours",
+  },
+  {
+    key: "knowledgeRetentionDays",
+    group: "study",
+    label: "Forget names after",
+    hint: "A symbol that has not been seen in the rotation for this long is dropped from the knowledge base, so delistings and stale names do not accumulate.",
+    kind: "number",
+    min: 1,
+    max: 365,
+    step: 1,
+    unit: "days",
+  },
+  {
+    key: "knowledgeBoostCount",
+    group: "study",
+    label: "Extra slots from the base",
+    hint: "Names the knowledge base rates highly are added to tonight's shortlist even if the live screen ranked them just outside it. Zero ignores the base when shortlisting.",
+    kind: "number",
+    min: 0,
+    max: 10,
+    step: 1,
+    unit: "slots",
+  },
+  {
+    key: "minObservationsToTrust",
+    group: "study",
+    label: "Sightings before trusting a name",
+    hint: "How many separate study rounds a symbol must have appeared in before the base is willing to promote it. Higher means only names with a consistent record get the benefit of the doubt.",
+    kind: "number",
+    min: 1,
+    max: 50,
+    step: 1,
+    unit: "rounds",
   },
 ];
 
