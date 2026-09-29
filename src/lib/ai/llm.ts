@@ -71,6 +71,7 @@ interface RawReply {
   citations: Citation[];
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function post(url: string, headers: Record<string, string>, body: unknown, label: string): Promise<any> {
   const res = await fetch(url, {
     method: "POST",
@@ -158,15 +159,17 @@ export async function structured<S extends z.ZodType>(schema: S, o: StructuredOp
 }
 
 /** Plain text answer, used by the chat panel. */
-export async function chatText(instructions: string, input: string): Promise<string> {
+export async function chatText(instructions: string, input: string, opts: { webSearch?: boolean } = {}): Promise<string> {
   const a = await active();
-  if (a.provider === "gemini") return (await geminiCall(a, instructions, input, false, false)).text;
-  if (a.provider === "anthropic") return (await claudeCall(a, instructions, input, false)).text;
+  const webSearch = !!opts.webSearch;
+  if (a.provider === "gemini") return (await geminiCall(a, instructions, input, webSearch, false)).text;
+  if (a.provider === "anthropic") return (await claudeCall(a, instructions, input, webSearch)).text;
   const res = await openai(a.key).responses.create({
     model: a.model,
     instructions,
     input,
     ...(isReasoning(a.model) ? { reasoning: { effort: "low" as const } } : {}),
+    ...(webSearch ? { tools: [{ type: "web_search" as const }] } : {}),
   });
   return res.output_text;
 }
