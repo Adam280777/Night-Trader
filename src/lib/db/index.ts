@@ -26,9 +26,11 @@ export function getDb(): Db {
   return g.__db;
 }
 
-/** Applies pending migrations once per process. */
+/** Applies pending migrations once per process. On Vercel the build step has already applied them. */
 export function ensureMigrated(): Promise<void> {
-  return (g.__migrated ??= migrate(getDb(), { migrationsFolder: path.resolve(/*turbopackIgnore: true*/ "./drizzle") }).catch((e) => {
+  const folder = path.resolve(/*turbopackIgnore: true*/ "./drizzle");
+  if (process.env.VERCEL && !fs.existsSync(path.join(folder, "meta", "_journal.json"))) return Promise.resolve();
+  return (g.__migrated ??= migrate(getDb(), { migrationsFolder: folder }).catch((e) => {
     g.__migrated = undefined;
     throw e;
   }));
