@@ -11,7 +11,7 @@ export interface PerfStats {
   totalPnl: number;
   byConfidence: { bucket: string; n: number; winRate: number; avgPnlPct: number }[];
   byMarket: { market: string; n: number; winRate: number; avgPnlPct: number }[];
-  /** Overnight return of the shortlist as a whole vs what we picked: is the AI adding value over the screener? */
+  /** Overnight return of the shortlist as a whole vs what we picked: is the model adding value over the screener? */
   shortlistAvgOvernightPct: number | null;
   pickedAvgOvernightPct: number | null;
   recent: { date: string; ticker: string; pnlPct: number | null; confidence: number | null }[];

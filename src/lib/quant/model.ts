@@ -28,14 +28,11 @@ import {
   type RunningStat,
 } from "./stats";
 import { FEATURE_KEYS, PRIOR_BIAS, priorWeights, type FeatureVector } from "./features";
+import { DEFAULT_TUNING, type QuantTuning } from "./tuning";
 
 export const MODEL_NAME = "overnight_v1";
 const MODEL_VERSION = 1;
 
-/** How strongly coefficients are pulled back toward their priors each update. */
-const RIDGE = 0.02;
-/** Base learning rate; AdaGrad scales it per feature. */
-const LEARNING_RATE = 0.08;
 const CALIBRATION_BINS = 8;
 
 export interface ModelState {
@@ -174,8 +171,9 @@ export interface TrainingSample {
  * One pass of regularised online gradient descent. Returns a new state; the caller persists it.
  * Samples should be passed in chronological order.
  */
-export function train(state: ModelState, samples: TrainingSample[], passes = 2): ModelState {
+export function train(state: ModelState, samples: TrainingSample[], tuning: QuantTuning = DEFAULT_TUNING): ModelState {
   if (samples.length === 0) return state;
+  const { ridge: RIDGE, learningRate: LEARNING_RATE, trainingPasses: passes } = tuning;
   const next: ModelState = {
     ...state,
     weights: { ...state.weights },

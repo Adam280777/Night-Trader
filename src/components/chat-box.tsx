@@ -9,7 +9,14 @@ interface Msg {
   content: string;
 }
 
-const SUGGESTIONS = ["Why did you pick your last stock?", "What have you learned so far?", "What was your worst trade and why?", "Are you beating the simple screener?"];
+const SUGGESTIONS = [
+  "Why did you pick your last stock?",
+  "What have you learned so far?",
+  "What are you weighing most heavily?",
+  "How are you configured right now?",
+  "Are you well calibrated?",
+  "What was your worst trade and why?",
+];
 
 export function ChatBox({ initial }: { initial: Msg[] }) {
   const [msgs, setMsgs] = useState<Msg[]>(initial);
@@ -45,7 +52,10 @@ export function ChatBox({ initial }: { initial: Msg[] }) {
       <div className="flex-1 space-y-3 overflow-y-auto p-5" aria-live="polite">
         {msgs.length === 0 && (
           <div className="space-y-3 py-6 text-center">
-            <p className="text-sm text-muted">Ask about any decision, trade or lesson. Answers come from the real records in the database.</p>
+            <p className="text-sm text-muted">
+              Ask about any decision, trade, lesson or setting. Answers are computed from the real records in the database, so
+              the model can only tell you things it actually did.
+            </p>
             <div className="flex flex-wrap justify-center gap-2">
               {SUGGESTIONS.map((s) => (
                 <button key={s} onClick={() => send(s)} className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-surface-2">
@@ -71,7 +81,7 @@ export function ChatBox({ initial }: { initial: Msg[] }) {
         }}
         className="flex gap-2 border-t border-border p-3"
       >
-        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Ask about a trade, a lesson, or how the AI thinks…" className="flex-1 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent" />
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Ask about a trade, a lesson, a setting, or how the model reasons…" className="flex-1 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent" />
         <button disabled={busy || !text.trim()} className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:text-black">
           <Send className="size-4" aria-hidden /> Send
         </button>

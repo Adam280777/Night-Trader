@@ -10,6 +10,7 @@
 import YahooFinance from "yahoo-finance2";
 import { clamp, mean } from "./stats";
 import type { NewsItem } from "./schemas";
+import { DEFAULT_TUNING, type QuantTuning } from "./tuning";
 
 const yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
 const OPTS = { validateResult: false } as const;
@@ -239,7 +240,7 @@ async function fromRss(symbol: string): Promise<RawNews[]> {
     .filter((n) => n.title && n.link);
 }
 
-export async function fetchHeadlines(symbol: string): Promise<RawNews[]> {
+export async function fetchHeadlines(symbol: string, limit = DEFAULT_TUNING.newsMaxHeadlines): Promise<RawNews[]> {
   let items: RawNews[] = [];
   try {
     items = await fromSearch(symbol);
@@ -263,7 +264,7 @@ export async function fetchHeadlines(symbol: string): Promise<RawNews[]> {
       return true;
     })
     .sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime())
-    .slice(0, 20);
+    .slice(0, limit);
 }
 
 export interface NewsAnalysis {
@@ -279,10 +280,11 @@ export interface NewsAnalysis {
   risks: string[];
 }
 
-/** Headlines decay with a 36-hour half-life: yesterday's news barely moves tonight's open. */
-const recencyWeight = (publishedAt: Date, now: number) => Math.pow(0.5, Math.max(0, now - publishedAt.getTime()) / (36 * 3_600_000));
+/** Headlines decay exponentially: with the default half-life, yesterday's news barely moves tonight's open. */
+const recencyWeight = (publishedAt: Date, now: number, halfLifeHours: number) =>
+  Math.pow(0.5, Math.max(0, now - publishedAt.getTime()) / (halfLifeHours * 3_600_000));
 
-export function analyseHeadlines(raw: RawNews[], now = Date.now()): NewsAnalysis {
+export function analyseHeadlines(raw: RawNews[], now = Date.now(), tuning: QuantTuning = DEFAULT_TUNING): NewsAnalysis {
   const items: NewsItem[] = raw.map((n) => ({
     title: n.title,
     url: n.link,
@@ -295,11 +297,11 @@ export function analyseHeadlines(raw: RawNews[], now = Date.now()): NewsAnalysis
   let wsum = 0;
   let wtot = 0;
   for (const [i, n] of raw.entries()) {
-    const w = recencyWeight(n.publishedAt, now);
+    const w = recencyWeight(n.publishedAt, now, tuning.newsHalfLifeHours);
     wsum += items[i].score * w;
     wtot += w;
   }
-  const sentiment = wtot > 0 ? clamp(wsum / wtot, -1, 1) : 0;
+  const sentiment = wtot > 0 ? clamp((wsum / wtot) * tuning.newsSentimentWeight, -1, 1) : 0;
 
   const last24 = raw.filter((n) => now - n.publishedAt.getTime() < 86_400_000).length;
   const spanDays = raw.length > 1 ? Math.max(1, (now - raw[raw.length - 1].publishedAt.getTime()) / 86_400_000) : 1;
@@ -323,8 +325,8 @@ export function analyseHeadlines(raw: RawNews[], now = Date.now()): NewsAnalysis
   return { items, sentiment, burst, events, binaryEventPending, catalysts, risks };
 }
 
-export async function analyseNews(symbol: string): Promise<NewsAnalysis> {
-  return analyseHeadlines(await fetchHeadlines(symbol));
+export async function analyseNews(symbol: string, tuning: QuantTuning = DEFAULT_TUNING): Promise<NewsAnalysis> {
+  return analyseHeadlines(await fetchHeadlines(symbol, tuning.newsMaxHeadlines), Date.now(), tuning);
 }
 
 /** Average absolute sentiment, used as a crude "is anything happening" measure. */

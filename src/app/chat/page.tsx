@@ -9,7 +9,10 @@ export default async function Chat() {
   const rows = await getDb().select().from(schema.chatMessages).orderBy(asc(schema.chatMessages.id)).limit(200);
   return (
     <>
-      <PageHeader title="Ask the AI" subtitle="Ask why it made a decision, what it has learned, or how it is doing. It only answers from its real records." />
+      <PageHeader
+        title="Talk to the quant model"
+        subtitle="Ask why it decided what it did, what it has learned, how it is configured, or how it is performing. Every answer is computed from its own records — nothing is generated or guessed."
+      />
       <ChatBox initial={rows.map((r) => ({ id: r.id, role: r.role, content: r.content }))} />
     </>
   );

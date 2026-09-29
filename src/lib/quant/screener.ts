@@ -2,6 +2,7 @@ import type { TradableInstrument } from "../t212/client";
 import { marketOf, type Market } from "../t212/instruments";
 import { getDailyBars, getNextEarnings, getQuotes, yahooSymbol, type Bar, type Quote } from "../market/data";
 import { clamp, finite, mean, rsi, sma, std, winsorize } from "./stats";
+import { DEFAULT_TUNING, type QuantTuning } from "./tuning";
 
 /**
  * Price-derived signals. Everything here is computable from free daily bars plus one quote, and is
@@ -154,9 +155,11 @@ interface ScreenOpts {
   /** Weekday (0-6, UTC) of the open we are trading into. */
   nextOpenWeekday: number;
   excludeTickers?: Set<string>;
+  tuning?: QuantTuning;
 }
 
 export async function screenUniverse(instruments: TradableInstrument[], o: ScreenOpts): Promise<Candidate[]> {
+  const t = o.tuning ?? DEFAULT_TUNING;
   const pool = instruments
     .filter((i) => (i.type === "STOCK" || i.type === "ETF") && marketOf(i) === o.market)
     .filter((i) => !o.excludeTickers?.has(i.ticker))
@@ -171,16 +174,16 @@ export async function screenUniverse(instruments: TradableInstrument[], o: Scree
     .filter((p): p is typeof p & { q: Quote } => !!p.q)
     .filter((p) => {
       const price = p.q.currency === "GBp" || p.q.currency === "GBX" ? p.q.price / 100 : p.q.price;
-      return price >= 1 && p.q.avgVolume3m * price >= o.minDollarVolume && (p.q.marketCap ?? 0) >= 1e9;
+      return price >= 1 && p.q.avgVolume3m * price >= o.minDollarVolume && (p.q.marketCap ?? 0) >= t.minMarketCap;
     })
     .sort((a, b) => b.q.avgVolume3m * b.q.price - a.q.avgVolume3m * a.q.price)
-    .slice(0, 60);
+    .slice(0, t.candidatePoolSize);
 
   // Stage 2: history-based signals for the most liquid names.
   const scored: Candidate[] = [];
   for (const p of liquid) {
     try {
-      const bars = await getDailyBars(p.y, 260);
+      const bars = await getDailyBars(p.y, t.historyBars);
       const sig = computeSignals(bars, p.q, o.nextOpenWeekday);
       if (!sig) continue;
       scored.push({

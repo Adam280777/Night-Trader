@@ -8,6 +8,7 @@ import { matchesRule, applyRules } from "./rules";
 import { mineLessons, type LabelledRow } from "./learn";
 import { decide, type CandidateInput, type DecideInput } from "./decide";
 import { priorWeights } from "./features";
+import { DEFAULT_TUNING, QuantTuningSchema, TUNING_GROUPS, TUNING_PARAMS, TUNING_PRESETS } from "./tuning";
 import type { Bar } from "../market/data";
 
 describe("stats", () => {
@@ -164,7 +165,6 @@ describe("model", () => {
     const trained = train(
       m,
       Array.from({ length: 200 }, () => ({ features: x, label: true })),
-      2,
     );
     const after = predict(trained, x).probability;
     expect(after).toBeGreaterThan(before);
@@ -173,8 +173,8 @@ describe("model", () => {
 
   it("training on negatives pushes the other way", () => {
     const x = featureVec({ gapSharpe: 2 });
-    const up = train(freshModel(), Array.from({ length: 200 }, () => ({ features: x, label: true })), 2);
-    const down = train(freshModel(), Array.from({ length: 200 }, () => ({ features: x, label: false })), 2);
+    const up = train(freshModel(), Array.from({ length: 200 }, () => ({ features: x, label: true })));
+    const down = train(freshModel(), Array.from({ length: 200 }, () => ({ features: x, label: false })));
     expect(predict(up, x).probability).toBeGreaterThan(predict(down, x).probability);
   });
 
@@ -351,5 +351,117 @@ describe("decide", () => {
       }),
     );
     expect(out.decision.action).toBe("NO_TRADE");
+  });
+
+  it("tuning can switch a veto off", () => {
+    const ctx = { volRegime: "stressed" } as never;
+    const off = decide(
+      base({
+        minConfidence: 0,
+        minEdgePct: -100,
+        context: ctx,
+        tuning: { ...DEFAULT_TUNING, vetoStressedVol: false },
+      }),
+    );
+    expect(off.evaluated[0].evaluation.vetoes).not.toContain("volatility regime is stressed");
+  });
+
+  it("the earnings veto is tunable", () => {
+    const out = decide(
+      base({
+        candidates: [candidate({ earningsWithin2d: true })],
+        minConfidence: 0,
+        minEdgePct: -100,
+        tuning: { ...DEFAULT_TUNING, vetoEarnings: false },
+      }),
+    );
+    expect(out.evaluated[0].evaluation.vetoes).not.toContain("earnings within two days");
+  });
+
+  it("a larger Kelly fraction sizes larger for the same edge", () => {
+    // The base candidate's edge is negative, which clamps Kelly to zero; a wide, strongly positive
+    // setup keeps the result off both the 0 and 1 clamps so the proportionality is observable.
+    const strong = [candidate({ gapMeanPct: 5, gapStdPct: 8, gapHitRate: 0.9, gapSharpe: 2, gapTStat: 6 })];
+    const small = decide(base({ candidates: strong, minConfidence: 0, minEdgePct: -100, tuning: { ...DEFAULT_TUNING, kellyFraction: 0.1 } }));
+    const large = decide(base({ candidates: strong, minConfidence: 0, minEdgePct: -100, tuning: { ...DEFAULT_TUNING, kellyFraction: 0.5 } }));
+    expect(small.evaluated[0].evaluation.kellyFraction).toBeGreaterThan(0);
+    expect(large.evaluated[0].evaluation.kellyFraction).toBeGreaterThan(small.evaluated[0].evaluation.kellyFraction);
+  });
+
+  it("a bigger uncertainty charge lowers the risk-adjusted edge", () => {
+    const lenient = decide(base({ minConfidence: 0, minEdgePct: -100, tuning: { ...DEFAULT_TUNING, uncertaintyPenalty: 0 } }));
+    const strict = decide(base({ minConfidence: 0, minEdgePct: -100, tuning: { ...DEFAULT_TUNING, uncertaintyPenalty: 3 } }));
+    expect(strict.evaluated[0].evaluation.riskAdjustedEdgePct).toBeLessThan(lenient.evaluated[0].evaluation.riskAdjustedEdgePct);
+  });
+
+  it("a higher cost buffer raises the hurdle and shrinks the edge", () => {
+    const cheap = decide(base({ minConfidence: 0, minEdgePct: -100 }));
+    const pricey = decide(base({ minConfidence: 0, minEdgePct: -100, tuning: { ...DEFAULT_TUNING, extraCostBufferPct: 1 } }));
+    expect(pricey.evaluated[0].evaluation.costPct).toBeGreaterThan(cheap.evaluated[0].evaluation.costPct);
+    expect(pricey.evaluated[0].evaluation.edgePct).toBeLessThan(cheap.evaluated[0].evaluation.edgePct);
+  });
+
+  it("the turnover veto threshold is tunable in both directions", () => {
+    const thin = candidate({ dollarVolume: 3_000_000 });
+    const permissive = decide(base({ candidates: [thin], minConfidence: 0, minEdgePct: -100 }));
+    const strict = decide(
+      base({ candidates: [thin], minConfidence: 0, minEdgePct: -100, tuning: { ...DEFAULT_TUNING, minTurnoverUsd: 10_000_000 } }),
+    );
+    expect(permissive.evaluated[0].evaluation.vetoes).toHaveLength(0);
+    expect(strict.evaluated[0].evaluation.vetoes.length).toBeGreaterThan(0);
+  });
+});
+
+describe("tuning registry", () => {
+  it("parses to the shipped defaults with no input", () => {
+    expect(QuantTuningSchema.parse({})).toEqual(DEFAULT_TUNING);
+  });
+
+  it("describes every schema key exactly once", () => {
+    const schemaKeys = Object.keys(QuantTuningSchema.shape).sort();
+    const described = TUNING_PARAMS.map((p) => p.key).sort();
+    expect(described).toEqual(schemaKeys);
+    expect(new Set(described).size).toBe(described.length);
+  });
+
+  it("gives every parameter a group, a label and a real explanation", () => {
+    for (const p of TUNING_PARAMS) {
+      expect(TUNING_GROUPS).toContain(p.group);
+      expect(p.label.length).toBeGreaterThan(2);
+      expect(p.hint.length).toBeGreaterThan(20);
+      if (p.kind === "number") {
+        expect(typeof p.min).toBe("number");
+        expect(typeof p.max).toBe("number");
+        expect(p.max!).toBeGreaterThan(p.min!);
+      }
+    }
+  });
+
+  it("keeps every default inside the range the UI offers", () => {
+    for (const p of TUNING_PARAMS) {
+      if (p.kind !== "number") continue;
+      const shown = (DEFAULT_TUNING[p.key] as number) * (p.scale ?? 1);
+      expect(shown).toBeGreaterThanOrEqual(p.min!);
+      expect(shown).toBeLessThanOrEqual(p.max!);
+    }
+  });
+
+  it("rejects out-of-range values", () => {
+    expect(QuantTuningSchema.safeParse({ kellyFraction: 5 }).success).toBe(false);
+    expect(QuantTuningSchema.safeParse({ maxProbability: 0.2 }).success).toBe(false);
+    expect(QuantTuningSchema.safeParse({ minRuleSamples: 2 }).success).toBe(false);
+    expect(QuantTuningSchema.safeParse({ shortlistSize: 2.5 }).success).toBe(false);
+  });
+
+  it("every preset is valid tuning", () => {
+    for (const preset of Object.values(TUNING_PRESETS)) {
+      expect(QuantTuningSchema.safeParse({ ...DEFAULT_TUNING, ...preset.values }).success).toBe(true);
+    }
+  });
+
+  it("presets are ordered from cautious to aggressive", () => {
+    const k = (id: keyof typeof TUNING_PRESETS) => ({ ...DEFAULT_TUNING, ...TUNING_PRESETS[id].values }).kellyFraction;
+    expect(k("cautious")).toBeLessThan(k("balanced"));
+    expect(k("balanced")).toBeLessThan(k("aggressive"));
   });
 });

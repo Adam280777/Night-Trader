@@ -6,7 +6,7 @@ import { quantityFor, unitCostInAccountCcy } from "./sizing";
 const base = (over: Partial<GuardrailInput> = {}): GuardrailInput => ({
   settings: SettingsSchema.parse({}),
   market: "US",
-  ai: { confidence: 0.7, investPct: 0.5, expectedMovePct: 1.5 },
+  proposal: { confidence: 0.7, investPct: 0.5, expectedMovePct: 1.5 },
   instrument: { type: "STOCK", name: "Apple Inc" },
   account: { totalValue: 1000, availableCash: 1000 },
   pnl: { dayPct: 0, weekPct: 0 },
@@ -38,11 +38,11 @@ describe("guardrails", () => {
   });
 
   it("requires higher confidence for UK and enough edge to beat stamp duty", () => {
-    const uk = evaluateGuardrails(base({ market: "UK", ai: { confidence: 0.65, investPct: 0.2, expectedMovePct: 3 } }));
+    const uk = evaluateGuardrails(base({ market: "UK", proposal: { confidence: 0.65, investPct: 0.2, expectedMovePct: 3 } }));
     expect(uk.allowed).toBe(false);
-    const thinEdge = evaluateGuardrails(base({ market: "UK", ai: { confidence: 0.9, investPct: 0.2, expectedMovePct: 1 } }));
+    const thinEdge = evaluateGuardrails(base({ market: "UK", proposal: { confidence: 0.9, investPct: 0.2, expectedMovePct: 1 } }));
     expect(thinEdge.allowed).toBe(false);
-    const ok = evaluateGuardrails(base({ market: "UK", ai: { confidence: 0.9, investPct: 0.2, expectedMovePct: 3 } }));
+    const ok = evaluateGuardrails(base({ market: "UK", proposal: { confidence: 0.9, investPct: 0.2, expectedMovePct: 3 } }));
     expect(ok.allowed).toBe(true);
   });
 
@@ -59,7 +59,7 @@ describe("guardrails", () => {
     const r = evaluateGuardrails(
       base({
         settings: SettingsSchema.parse({ maxPositionPct: 1, maxInvestPctOfCash: 1 }),
-        ai: { confidence: 0.7, investPct: 1, expectedMovePct: 1.5 },
+        proposal: { confidence: 0.7, investPct: 1, expectedMovePct: 1.5 },
       }),
     );
     expect(r.investValue).toBe(995);

@@ -66,7 +66,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
             <Stat label="Bought" value={trade.entryPrice?.toFixed(2) ?? "n/a"} sub={`${trade.quantity} @ ${when(trade.entryAt)}`} />
             <Stat label="Sold" value={trade.exitPrice?.toFixed(2) ?? "n/a"} sub={when(trade.exitAt)} />
           </div>
-          {trade.review && <p className="mt-4 rounded-lg bg-surface-2 p-3 text-sm"><b>AI review:</b> {trade.review}</p>}
+          {trade.review && <p className="mt-4 rounded-lg bg-surface-2 p-3 text-sm"><b>Post-mortem:</b> {trade.review}</p>}
           {lessons.length > 0 && (
             <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">{lessons.map((l) => <li key={l.id}>{l.text}</li>)}</ul>
           )}

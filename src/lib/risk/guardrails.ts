@@ -4,7 +4,7 @@ import type { Market } from "../t212/instruments";
 export interface GuardrailInput {
   settings: Settings;
   market: Market;
-  ai: { confidence: number; investPct: number; expectedMovePct: number };
+  proposal: { confidence: number; investPct: number; expectedMovePct: number };
   instrument: { type: string; name: string };
   account: { totalValue: number; availableCash: number };
   /** Realised+unrealised change as a fraction of starting value, negative = loss. */
@@ -39,15 +39,15 @@ export function evaluateGuardrails(i: GuardrailInput): GuardrailResult {
   if (LEVERAGED.test(i.instrument.name)) reasons.push("Leveraged/inverse products are not allowed.");
 
   const minConf = i.market === "UK" ? Math.max(s.minConfidence, s.ukMinConfidence) : s.minConfidence;
-  if (i.ai.confidence < minConf) {
-    reasons.push(`Confidence ${(i.ai.confidence * 100).toFixed(0)}% below required ${(minConf * 100).toFixed(0)}%.`);
+  if (i.proposal.confidence < minConf) {
+    reasons.push(`Confidence ${(i.proposal.confidence * 100).toFixed(0)}% below required ${(minConf * 100).toFixed(0)}%.`);
   }
 
   const cost = estimatedRoundTripCostPct(i.market);
-  const netEdge = i.ai.expectedMovePct - cost;
+  const netEdge = i.proposal.expectedMovePct - cost;
   if (netEdge < s.minExpectedEdgePct) {
     reasons.push(
-      `Expected move ${i.ai.expectedMovePct.toFixed(2)}% minus ~${cost.toFixed(2)}% costs leaves ${netEdge.toFixed(2)}%, below the ${s.minExpectedEdgePct}% minimum.`,
+      `Expected move ${i.proposal.expectedMovePct.toFixed(2)}% minus ~${cost.toFixed(2)}% costs leaves ${netEdge.toFixed(2)}%, below the ${s.minExpectedEdgePct}% minimum.`,
     );
   }
 
@@ -56,7 +56,7 @@ export function evaluateGuardrails(i: GuardrailInput): GuardrailResult {
 
   if (i.minutesToClose < 1) reasons.push("Market is closed or about to close.");
 
-  const requested = Math.max(0, i.ai.investPct) * i.account.availableCash;
+  const requested = Math.max(0, i.proposal.investPct) * i.account.availableCash;
   const caps = {
     cashCap: s.maxInvestPctOfCash * i.account.availableCash,
     positionCap: s.maxPositionPct * i.account.totalValue,

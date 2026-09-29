@@ -2,10 +2,11 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import { decrypt, encrypt } from "./secrets";
+import { QuantTuningSchema } from "./quant/tuning";
 
 /** User-tunable settings, persisted in SQLite. Hard limits live here but are enforced in lib/risk. */
 export const SettingsSchema = z.object({
-  // "dry" = full AI pipeline, no orders sent. "trading" = send orders to the env in T212_ENV.
+  // "dry" = the full pipeline runs and results are simulated, no orders sent. "trading" = send orders to T212_ENV.
   tradingEnabled: z.boolean().default(false),
   // Must be set through the typed-confirmation flow before T212_ENV=live is allowed to send orders.
   liveConfirmed: z.boolean().default(false),
@@ -26,8 +27,28 @@ export const SettingsSchema = z.object({
   minutesBeforeCloseToBuy: z.number().int().min(3).max(60).default(10),
   minutesBeforeCloseToResearch: z.number().int().min(15).max(240).default(60),
   approvalWindowMinutes: z.number().int().min(1).max(120).default(15),
+  /** Everything adjustable inside the quantitative engine. */
+  quant: QuantTuningSchema.default(QuantTuningSchema.parse({})),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
+
+/**
+ * A patch may touch a single key inside `quant` or `markets`, so those are deep-partial here and
+ * merged a level down in `updateSettings`. Validating them with the full schema instead would
+ * silently backfill every untouched key with its default.
+ */
+export const SettingsPatchSchema = SettingsSchema.omit({ quant: true, markets: true })
+  .partial()
+  .extend({
+    quant: QuantTuningSchema.partial().optional(),
+    markets: z.object({ US: z.boolean(), UK: z.boolean() }).partial().optional(),
+  });
+export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
+
+/** The engine's tuning, read straight from settings. */
+export async function getTuning() {
+  return (await getSettings()).quant;
+}
 
 export async function getSettings(): Promise<Settings> {
   const db = getDb();
@@ -37,9 +58,15 @@ export async function getSettings(): Promise<Settings> {
   return SettingsSchema.parse(obj);
 }
 
-export async function updateSettings(patch: Partial<Settings>): Promise<Settings> {
+export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
   const db = getDb();
-  const next = SettingsSchema.parse({ ...(await getSettings()), ...patch });
+  const current = await getSettings();
+  // The nested objects have a default for every field, so a shallow spread would silently reset
+  // any key the caller left out of a partial patch. Merge them a level deeper.
+  const merged: Record<string, unknown> = { ...current, ...patch };
+  if (patch.quant) merged.quant = { ...current.quant, ...patch.quant };
+  if (patch.markets) merged.markets = { ...current.markets, ...patch.markets };
+  const next = SettingsSchema.parse(merged);
   for (const [key, value] of Object.entries(next)) {
     await db.insert(schema.settings).values({ key, value }).onConflictDoUpdate({ target: schema.settings.key, set: { value } });
   }

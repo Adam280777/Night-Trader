@@ -11,9 +11,9 @@ import { findAnalogues, serializeAnalogue, unconditionalAnalogue, type AnalogueR
 import { analyseNews, type NewsAnalysis } from "./news";
 import { overnightGaps, type Candidate } from "./screener";
 import type { Research, Source } from "./schemas";
+import { DEFAULT_TUNING, type QuantTuning } from "./tuning";
 
 /** Enough history for kernel analogues to have something to match against. */
-const ANALOGUE_BARS = 750;
 
 function overnightRiskOf(c: Candidate, news: NewsAnalysis): "low" | "medium" | "high" {
   let score = 0;
@@ -66,13 +66,13 @@ export interface CandidateResearch {
   analogueSnapshot: AnalogueSnapshot | null;
 }
 
-export async function researchCandidate(c: Candidate): Promise<CandidateResearch> {
-  const news = await analyseNews(c.yahoo);
+export async function researchCandidate(c: Candidate, tuning: QuantTuning = DEFAULT_TUNING): Promise<CandidateResearch> {
+  const news = await analyseNews(c.yahoo, tuning);
 
   let analogue: AnalogueResult | null = null;
   try {
-    const bars = await getDailyBars(c.yahoo, ANALOGUE_BARS);
-    analogue = findAnalogues(bars) ?? unconditionalAnalogue(overnightGaps(bars).map((g) => g.pct));
+    const bars = await getDailyBars(c.yahoo, tuning.analogueBars);
+    analogue = findAnalogues(bars, tuning.minAnalogueSamples) ?? unconditionalAnalogue(overnightGaps(bars).map((g) => g.pct));
   } catch {
     /* analogues are an enhancement; the model alone still produces a decision */
   }

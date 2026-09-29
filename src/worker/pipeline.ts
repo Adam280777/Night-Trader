@@ -51,11 +51,13 @@ export async function stageScreen(runId: number): Promise<void> {
     if (!client) throw new Error("Trading 212 API credentials are required (instrument universe). Add them in Settings.");
     await setRunStatus(runId, "screening");
     const instruments = await getInstrumentsCached(client);
+    const tuning = (await getSettings()).quant;
     const shortlist = await screenUniverse(instruments, {
       market: run.market,
-      minDollarVolume: run.market === "US" ? 20_000_000 : 5_000_000,
-      shortlist: 8,
+      minDollarVolume: run.market === "US" ? tuning.usMinDollarVolume : tuning.ukMinDollarVolume,
+      shortlist: tuning.shortlistSize,
       nextOpenWeekday: nextOpenWeekday(),
+      tuning,
     });
     if (shortlist.length === 0) throw new Error("Screener found no liquid candidates");
     await log("info", "pipeline", `Shortlist (${run.market}): ${shortlist.map((c) => c.ticker).join(", ")}`, runId);
@@ -86,6 +88,7 @@ export async function stageResearch(runId: number, deadline: number, concurrency
   const run = await getRun(runId);
   if (!run) return;
   try {
+    const researchTuning = (await getSettings()).quant;
     const ctxKey = `mctx:${runId}`;
     if (!(await getKv(ctxKey))) {
       try {
@@ -109,7 +112,7 @@ export async function stageResearch(runId: number, deadline: number, concurrency
         while (next < pending.length && Date.now() < deadline) {
           const row = pending[next++];
           try {
-            const { research, analogueSnapshot } = await researchCandidate(asCandidate(row, run.market));
+            const { research, analogueSnapshot } = await researchCandidate(asCandidate(row, run.market), researchTuning);
             await db
               .update(candidates)
               .set({ researchSummary: research.summary, research: { ...research, analogue: analogueSnapshot } })
@@ -193,6 +196,7 @@ export async function stageDecide(runId: number): Promise<void> {
       minutesToClose: minutesToClose(),
       minConfidence,
       minEdgePct: settings.minExpectedEdgePct,
+      tuning: settings.quant,
     });
 
     // Persist every candidate's feature vector and evaluation: this is tomorrow's training data.

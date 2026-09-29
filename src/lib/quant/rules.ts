@@ -11,6 +11,7 @@ import { getDb, schema } from "../db";
 import { clamp } from "./stats";
 import type { FeatureVector } from "./features";
 import type { LessonRule } from "./schemas";
+import { DEFAULT_TUNING, type QuantTuning } from "./tuning";
 
 export interface ActiveRule {
   id: number;
@@ -48,13 +49,19 @@ export interface RuleEffect {
  * Adjustments are summed and then clamped: several overlapping lessons should not be able to
  * override the model outright, only tilt it.
  */
-export function applyRules(rules: ActiveRule[], market: "US" | "UK", features: FeatureVector): RuleEffect {
+export function applyRules(
+  rules: ActiveRule[],
+  market: "US" | "UK",
+  features: FeatureVector,
+  tuning: QuantTuning = DEFAULT_TUNING,
+): RuleEffect {
+  if (!tuning.rulesEnabled) return { adjustment: 0, applied: [] };
   const applied: string[] = [];
   let total = 0;
-  for (const r of rules) {
+  for (const r of rules.slice(0, tuning.maxActiveRules)) {
     if (!matchesRule(r.rule, market, features)) continue;
-    total += r.rule.adjustment;
+    total += clamp(r.rule.adjustment, -tuning.maxRuleAdjustment, tuning.maxRuleAdjustment);
     applied.push(r.text);
   }
-  return { adjustment: clamp(total, -1.2, 1.2), applied };
+  return { adjustment: clamp(total, -tuning.maxTotalRuleAdjustment, tuning.maxTotalRuleAdjustment), applied };
 }

@@ -8,7 +8,7 @@ const ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/history", label: "History", icon: History },
   { href: "/learning", label: "Learning", icon: Brain },
-  { href: "/chat", label: "Ask the AI", icon: MessageCircle },
+  { href: "/chat", label: "Ask the model", icon: MessageCircle },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

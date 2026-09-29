@@ -19,11 +19,27 @@ from Yahoo Finance, which needs no key. The only external service is Trading 212
 3. **Evaluate** — each candidate becomes a feature vector. A calibrated probability of clearing round-trip costs is
    blended in log-odds from the learned model, kernel-weighted historical analogues, and mined rules.
 4. **Decide** — expected move minus costs gives an edge; names are ranked on a risk-adjusted (lower-bound) edge and
-   sized with a quarter-Kelly fraction. If nothing clears the bar the answer is no trade.
+   sized with a fraction of Kelly. If nothing clears the bar the answer is no trade.
 5. **Guardrails** — position caps, minimum cash, daily/weekly loss breakers, cost checks and the kill switch sit
    downstream and cannot be overridden.
 6. **Learn** — the overnight return of *every* shortlisted name is recorded, picked or not. Those counterfactuals
    train the model and re-derive the rule set, so it sharpens every trading day.
+
+## Tuning the model
+
+Every constant the engine uses is defined once in [`src/lib/quant/tuning.ts`](src/lib/quant/tuning.ts): a zod schema
+with the shipped defaults, plus the label, range and plain-English explanation of each parameter. The **Settings**
+page is generated from that registry, so a parameter cannot exist in the engine without being adjustable, or appear
+in the UI without being real.
+
+Roughly three dozen parameters are exposed across six groups — decision engine (Kelly fraction, uncertainty charge,
+analogue blending, probability ceiling), costs, screening, hard vetoes, learning (learning rate, rule significance
+and caps) and headlines. There are Cautious / Balanced / Aggressive presets, each section resets independently, and
+anything moved off its default is marked. Changes apply to the next run; nothing is retroactive, and the safety
+limits are enforced separately and cannot be raised from here.
+
+The **Ask the model** page answers from the same registry, so you can ask what any setting does, how the system is
+currently configured, or what moving a given parameter would change.
 
 ## How it runs in the cloud
 

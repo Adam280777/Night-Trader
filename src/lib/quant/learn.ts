@@ -18,13 +18,10 @@ import { FEATURES, FEATURE_BY_KEY } from "./features";
 import { diagnostics, loadModel, saveModel, train, type ModelState, type TrainingSample } from "./model";
 import { binomialPValue, clamp, logit, mean, median, shrunkRate, quantile } from "./stats";
 import type { LessonRule, Review } from "./schemas";
+import { DEFAULT_TUNING, type QuantTuning } from "./tuning";
+import { getTuning } from "../config";
 
 const { candidates, runs, lessons } = schema;
-
-/** Minimum labelled rows before a mined pattern is allowed to influence anything. */
-const MIN_RULE_SAMPLES = 30;
-const MAX_RULE_P_VALUE = 0.05;
-const MAX_ACTIVE_RULES = 12;
 
 export interface LabelledRow {
   id: number;
@@ -37,7 +34,7 @@ export interface LabelledRow {
   label: boolean;
 }
 
-async function labelledRows(afterId = 0): Promise<LabelledRow[]> {
+async function labelledRows(afterId = 0, tuning: QuantTuning = DEFAULT_TUNING): Promise<LabelledRow[]> {
   const rows = await getDb()
     .select({ c: candidates, market: runs.market })
     .from(candidates)
@@ -48,10 +45,14 @@ async function labelledRows(afterId = 0): Promise<LabelledRow[]> {
   return rows
     .filter((r) => r.c.features && r.c.overnightReturnPct != null)
     .map(({ c, market }) => {
-      const cost = roundTripCostPct(market, {
-        atrPct: Number((c.signals as Record<string, number> | null)?.atrPct ?? 2),
-        dollarVolume: Number((c.signals as Record<string, number> | null)?.dollarVolume ?? 5e7),
-      });
+      const cost = roundTripCostPct(
+        market,
+        {
+          atrPct: Number((c.signals as Record<string, number> | null)?.atrPct ?? 2),
+          dollarVolume: Number((c.signals as Record<string, number> | null)?.dollarVolume ?? 5e7),
+        },
+        tuning,
+      );
       return {
         id: c.id,
         ticker: c.ticker,
@@ -66,12 +67,13 @@ async function labelledRows(afterId = 0): Promise<LabelledRow[]> {
 
 /** Trains on every scored candidate not seen before. Returns how many rows were consumed. */
 export async function trainFromOutcomes(): Promise<{ trained: number; state: ModelState }> {
+  const tuning = await getTuning();
   const state = await loadModel();
-  const rows = await labelledRows(state.lastCandidateId);
+  const rows = await labelledRows(state.lastCandidateId, tuning);
   if (rows.length === 0) return { trained: 0, state };
 
   const samples: TrainingSample[] = rows.map((r) => ({ features: r.features, label: r.label }));
-  const next = train(state, samples);
+  const next = train(state, samples, tuning);
   next.lastCandidateId = Math.max(state.lastCandidateId, ...rows.map((r) => r.id));
   await saveModel(next);
   return { trained: rows.length, state: next };
@@ -110,7 +112,10 @@ export interface MinedLesson {
  * rate. A pattern must clear a minimum sample size and a two-sided binomial test before it is kept,
  * and the resulting adjustment is shrunk, so noise cannot turn into dogma.
  */
-export function mineLessons(rows: LabelledRow[]): MinedLesson[] {
+export function mineLessons(rows: LabelledRow[], tuning: QuantTuning = DEFAULT_TUNING): MinedLesson[] {
+  const MIN_RULE_SAMPLES = tuning.minRuleSamples;
+  const MAX_RULE_P_VALUE = tuning.maxRulePValue;
+  const MAX_ACTIVE_RULES = tuning.maxActiveRules;
   if (rows.length < MIN_RULE_SAMPLES * 2) return [];
   const baseRate = rows.filter((r) => r.label).length / rows.length;
   if (baseRate <= 0 || baseRate >= 1) return [];
@@ -140,7 +145,7 @@ export function mineLessons(rows: LabelledRow[]): MinedLesson[] {
         if (p > MAX_RULE_P_VALUE) continue;
 
         const observed = shrunkRate(wins, inSplit.length, scopeRate, 12);
-        const adjustment = clamp(logit(observed) - logit(scopeRate), -0.7, 0.7);
+        const adjustment = clamp(logit(observed) - logit(scopeRate), -tuning.maxRuleAdjustment, tuning.maxRuleAdjustment);
         if (Math.abs(adjustment) < 0.12) continue;
 
         const avg = mean(inSplit.map((r) => r.returnPct));
@@ -184,8 +189,9 @@ export function mineLessons(rows: LabelledRow[]): MinedLesson[] {
  */
 export async function refreshLessons(): Promise<{ active: number }> {
   const db = getDb();
-  const rows = await labelledRows();
-  const mined = mineLessons(rows);
+  const tuning = await getTuning();
+  const rows = await labelledRows(0, tuning);
+  const mined = mineLessons(rows, tuning);
 
   const existing = await db.select().from(lessons).where(isNotNull(lessons.rule));
   for (const row of existing) {

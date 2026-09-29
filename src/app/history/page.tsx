@@ -11,7 +11,7 @@ export default async function History() {
   return (
     <>
       <AutoRefresh seconds={30} />
-      <PageHeader title="History" subtitle="Every run, including the days the AI chose to sit out. Click a row for its full research and reasoning." />
+      <PageHeader title="History" subtitle="Every run, including the days the model chose to sit out. Click a row for its full research and reasoning." />
       <Card>
         {rows.length === 0 ? (
           <Empty>No runs yet.</Empty>

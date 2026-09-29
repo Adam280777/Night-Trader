@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { SettingsSchema, getEnvConfig, getSettings, updateSettings } from "@/lib/config";
+import { SettingsPatchSchema, getEnvConfig, getSettings, updateSettings } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,7 @@ export async function PUT(req: Request) {
   if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
 
   const { confirmText, ...patchRaw } = body;
-  const parsed = SettingsSchema.partial().safeParse(patchRaw);
+  const parsed = SettingsPatchSchema.safeParse(patchRaw);
   if (!parsed.success) return NextResponse.json({ error: z.prettifyError(parsed.error) }, { status: 400 });
   const patch = parsed.data;
 

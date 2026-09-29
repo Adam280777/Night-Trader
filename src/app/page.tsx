@@ -99,7 +99,7 @@ export default async function Dashboard() {
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2" title={run ? `${run.market} run · ${run.tradingDate}` : "Today"} action={st && <Badge tone={st.tone}>{st.label}</Badge>}>
           {!run ? (
-            <Empty>Nothing yet. The AI starts researching about {settings.minutesBeforeCloseToResearch} minutes before the next market close ({[settings.markets.US && "US", settings.markets.UK && "UK"].filter(Boolean).join(" and ")}).</Empty>
+            <Empty>Nothing yet. The model starts researching about {settings.minutesBeforeCloseToResearch} minutes before the next market close ({[settings.markets.US && "US", settings.markets.UK && "UK"].filter(Boolean).join(" and ")}).</Empty>
           ) : (
             <div className="space-y-4">
               <Timeline status={run.status} />
@@ -119,7 +119,7 @@ export default async function Dashboard() {
                   )}
                 </div>
               )}
-              {decision && decision.action === "NO_TRADE" && <p className="rounded-lg bg-surface-2 p-4 text-sm"><b>The AI sat this one out.</b> {decision.thesis}</p>}
+              {decision && decision.action === "NO_TRADE" && <p className="rounded-lg bg-surface-2 p-4 text-sm"><b>The model sat this one out.</b> {decision.thesis}</p>}
               <Link href={`/history/${run.id}`} className="inline-block text-sm font-medium text-accent hover:underline">See full research and reasoning</Link>
             </div>
           )}

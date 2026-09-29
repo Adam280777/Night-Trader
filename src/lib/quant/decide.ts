@@ -22,14 +22,7 @@ import type { Candidate } from "./screener";
 import type { AnalogueResult } from "./analogues";
 import type { Decision, Evaluation, MarketContext, Research } from "./schemas";
 import { clamp, finite, logit, normalCdf, normalMeanAbove, normalMeanBelow, proportionSe, sigmoid } from "./stats";
-
-/** Fraction of full Kelly we ever stake. Full Kelly is far too aggressive on estimated edges. */
-const KELLY_FRACTION = 0.25;
-/** How many standard errors of estimation uncertainty we charge against the edge. */
-const UNCERTAINTY_PENALTY = 1.0;
-/** Pseudo-count controlling how fast the analogue view earns weight against the model. */
-const ANALOGUE_PRIOR_WEIGHT = 35;
-const MAX_ANALOGUE_WEIGHT = 0.6;
+import { DEFAULT_TUNING, type QuantTuning } from "./tuning";
 
 export interface CandidateInput {
   candidate: Candidate;
@@ -49,6 +42,8 @@ export interface DecideInput {
   minConfidence: number;
   /** Minimum net edge in percent, after costs. */
   minEdgePct: number;
+  /** Every tunable constant in the engine. Falls back to the shipped defaults. */
+  tuning?: QuantTuning;
 }
 
 export interface Evaluated {
@@ -63,8 +58,15 @@ export interface Evaluated {
  * Expected overnight return given a probability of clearing `threshold`, using the analogue
  * distribution's conditional means where available and a normal approximation otherwise.
  */
-function expectedMove(p: number, threshold: number, sigma: number, analogue: AnalogueResult | null, drift: number): number {
-  if (analogue && analogue.samples >= 12) {
+function expectedMove(
+  p: number,
+  threshold: number,
+  sigma: number,
+  analogue: AnalogueResult | null,
+  drift: number,
+  minSamples: number,
+): number {
+  if (analogue && analogue.samples >= minSamples) {
     const { win, loss } = analogue.conditionalMeans(threshold);
     return p * win + (1 - p) * loss;
   }
@@ -74,32 +76,36 @@ function expectedMove(p: number, threshold: number, sigma: number, analogue: Ana
 }
 
 export function evaluateCandidate(i: DecideInput, input: CandidateInput): Evaluated {
+  const t = i.tuning ?? DEFAULT_TUNING;
   const { candidate: c, research, analogue } = input;
   const ctx: FeatureContext = { market: i.market, signals: c.signals, research, context: i.context };
   const features = extractFeatures(ctx);
 
-  const costPct = breakEvenPct(i.market, c.signals);
+  const costPct = breakEvenPct(i.market, c.signals, t);
   const prediction = predict(i.model, features);
-  const rules = applyRules(i.rules, i.market, features);
+  const rules = applyRules(i.rules, i.market, features, t);
 
   // --- Blend the two probability views in log-odds space -------------------------------------
   const analogueSamples = analogue?.samples ?? 0;
-  const analogueProbability = analogue && analogueSamples >= 12 ? analogue.probAbove(costPct) : null;
+  const hasAnalogue = analogueSamples >= t.minAnalogueSamples;
+  const analogueProbability = analogue && hasAnalogue ? analogue.probAbove(costPct) : null;
   const analogueWeight =
-    analogueProbability == null ? 0 : clamp(analogueSamples / (analogueSamples + ANALOGUE_PRIOR_WEIGHT), 0, MAX_ANALOGUE_WEIGHT);
+    analogueProbability == null
+      ? 0
+      : clamp(analogueSamples / (analogueSamples + t.analoguePriorWeight), 0, t.maxAnalogueWeight);
 
   const blendedLogOdds =
     logit(prediction.probability) * (1 - analogueWeight) +
     (analogueProbability != null ? logit(analogueProbability) * analogueWeight : 0) +
     rules.adjustment;
-  const probability = clamp(sigmoid(blendedLogOdds), 0.01, 0.95);
+  const probability = clamp(sigmoid(blendedLogOdds), 0.01, t.maxProbability);
 
   // --- Dispersion and expected value ----------------------------------------------------------
-  const baseSigma = analogue && analogueSamples >= 12 ? analogue.sigmaPct : Math.max(0.3, c.signals.gapStdPct);
+  const baseSigma = analogue && hasAnalogue ? analogue.sigmaPct : Math.max(0.3, c.signals.gapStdPct);
   const sigmaPct = clamp(finite(baseSigma, 1) * regimeVolMultiplier(i.context?.vix ?? null), 0.25, 12);
-  const drift = analogue && analogueSamples >= 12 ? analogue.meanPct : c.signals.gapMeanPct;
+  const drift = analogue && hasAnalogue ? analogue.meanPct : c.signals.gapMeanPct;
 
-  const expectedMovePct = finite(expectedMove(probability, costPct, sigmaPct, analogue, drift));
+  const expectedMovePct = finite(expectedMove(probability, costPct, sigmaPct, analogue, drift, t.minAnalogueSamples));
   const edgePct = expectedMovePct - costPct;
 
   // Charge for how little we actually know: uncertainty in p, plus uncertainty in the mean itself.
@@ -107,20 +113,21 @@ export function evaluateCandidate(i: DecideInput, input: CandidateInput): Evalua
   const probSe = proportionSe(probability, effectiveN);
   const meanSe = sigmaPct / Math.sqrt(effectiveN);
   const edgeSe = Math.sqrt((probSe * 2 * sigmaPct) ** 2 + meanSe ** 2);
-  const riskAdjustedEdgePct = edgePct - UNCERTAINTY_PENALTY * edgeSe;
+  const riskAdjustedEdgePct = edgePct - t.uncertaintyPenalty * edgeSe;
 
-  // --- Sizing: quarter Kelly on the risk-adjusted edge ----------------------------------------
+  // --- Sizing: a fraction of Kelly on the risk-adjusted edge -----------------------------------
   const mu = riskAdjustedEdgePct / 100;
   const s = sigmaPct / 100;
-  const kellyFraction = clamp(s > 0 ? (mu / (s * s)) * KELLY_FRACTION : 0, 0, 1);
+  const kellyFraction = clamp(s > 0 ? (mu / (s * s)) * t.kellyFraction : 0, 0, 1);
 
   // --- Hard flags ------------------------------------------------------------------------------
   const vetoes: string[] = [];
-  if (research?.earningsOrBinaryEventBeforeNextOpen) vetoes.push("a binary event resolves before the next open");
-  if (c.signals.earningsWithin2d) vetoes.push("earnings within two days");
-  if (research?.overnightRisk === "high") vetoes.push("headline-driven overnight risk is high");
-  if (c.signals.dollarVolume > 0 && c.signals.dollarVolume < 2e6) vetoes.push("turnover is too thin to exit into the open reliably");
-  if (i.context?.volRegime === "stressed") vetoes.push("volatility regime is stressed");
+  if (t.vetoBinaryEvent && research?.earningsOrBinaryEventBeforeNextOpen) vetoes.push("a binary event resolves before the next open");
+  if (t.vetoEarnings && c.signals.earningsWithin2d) vetoes.push("earnings within two days");
+  if (t.vetoHighNewsRisk && research?.overnightRisk === "high") vetoes.push("headline-driven overnight risk is high");
+  if (c.signals.dollarVolume > 0 && c.signals.dollarVolume < t.minTurnoverUsd)
+    vetoes.push("turnover is too thin to exit into the open reliably");
+  if (t.vetoStressedVol && i.context?.volRegime === "stressed") vetoes.push("volatility regime is stressed");
 
   const attributions = buildAttributions(prediction.contributions, ctx);
   if (rules.applied.length) {
@@ -209,7 +216,7 @@ export function decide(i: DecideInput): DecideOutput {
   if (e.edgePct < i.minEdgePct) {
     return noTrade(`Its ${e.edgePct.toFixed(2)}% edge after costs is below the ${i.minEdgePct.toFixed(2)}% minimum.`, best);
   }
-  if (e.kellyFraction < 0.02) {
+  if (e.kellyFraction < (i.tuning ?? DEFAULT_TUNING).minKellyFraction) {
     return noTrade("The optimal stake rounds to nothing, so the edge is not worth the exposure.", best);
   }
 

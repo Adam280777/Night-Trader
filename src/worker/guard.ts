@@ -26,7 +26,7 @@ export async function checkDecisionGuardrails(
   const result = evaluateGuardrails({
     settings: await getSettings(),
     market,
-    ai: { confidence: d.confidence ?? 0, investPct: d.investPct ?? 0, expectedMovePct: d.expectedMovePct ?? 0 },
+    proposal: { confidence: d.confidence ?? 0, investPct: d.investPct ?? 0, expectedMovePct: d.expectedMovePct ?? 0 },
     instrument: { type: inst?.type ?? "STOCK", name: inst?.name ?? d.name ?? "" },
     account: { totalValue: acct.totalValue, availableCash: acct.availableCash },
     pnl: await pnlWindows(acct.totalValue),

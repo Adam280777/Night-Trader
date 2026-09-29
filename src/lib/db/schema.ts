@@ -56,7 +56,7 @@ export const decisions = sqliteTable("decisions", {
   name: text("name"),
   action: text("action", { enum: ["BUY", "NO_TRADE"] }).notNull(),
   confidence: real("confidence"), // 0..1
-  investPct: real("invest_pct"), // fraction of free cash requested by AI
+  investPct: real("invest_pct"), // fraction of free cash requested by the engine
   thesis: text("thesis"),
   expectedMovePct: real("expected_move_pct"),
   exitPlan: text("exit_plan"),

@@ -10,7 +10,10 @@ export default async function SettingsPage() {
   const { settings, env } = await getSettingsView();
   return (
     <>
-      <PageHeader title="Settings" subtitle="Connect your accounts, tune the safety limits and manage access. Changes save instantly." />
+      <PageHeader
+        title="Settings"
+        subtitle="Connect your account, set the safety limits, and tune every parameter the quant model uses to decide. Changes save instantly and apply to the next run."
+      />
       <div className="space-y-6">
         <ConnectionsForm initial={await connectionStatus()} />
         <SettingsForm settings={settings} t212Env={env.t212Env} hasT212Keys={env.hasT212Keys} />

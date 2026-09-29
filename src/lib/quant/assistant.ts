@@ -6,6 +6,8 @@ import { getWorkerStatus } from "../queries";
 import { getActiveLessons, getPerformanceStats } from "./memory";
 import { getModelReport } from "./learn";
 import { FEATURE_BY_KEY } from "./features";
+import { roundTripCostPct } from "./costs";
+import { DEFAULT_TUNING, GROUP_META, TUNING_PARAMS, TUNING_GROUPS, type QuantTuning, type TuningParam } from "./tuning";
 import type { Evaluation } from "./schemas";
 
 const { runs, decisions, trades, candidates } = schema;
@@ -204,46 +206,167 @@ async function answerShortlist(): Promise<string> {
   ].join("\n");
 }
 
-function answerHow(): string {
+async function answerHow(): Promise<string> {
+  const tuning = (await getSettings()).quant;
   return [
     "**How this system decides, end to end**",
     "1. **Trigger.** An external timer calls the app every minute, so runs happen with your PC off. Shortly before each enabled market closes, a run starts.",
-    "2. **Screen.** The tradable instrument list comes from Trading 212; it is filtered to liquid, non-leveraged stocks and ranked on momentum, relative volume, gap history, volatility and position in range, down to a shortlist of about eight.",
-    "3. **Research.** For each shortlisted name the app pulls several years of daily bars plus free headlines, scores the headlines with a finance-tuned lexicon, and classifies events such as earnings, guidance, upgrades and legal news. No paid API is involved.",
+    `2. **Screen.** The tradable instrument list comes from Trading 212; it is filtered to liquid, non-leveraged stocks and ranked on momentum, relative volume, gap history, volatility and position in range, down to a shortlist of ${tuning.shortlistSize}.`,
+    `3. **Research.** For each shortlisted name the app pulls ${tuning.analogueBars} daily bars plus free headlines, scores the headlines with a finance-tuned lexicon (half-life ${tuning.newsHalfLifeHours} hours), and classifies events such as earnings, guidance, upgrades and legal news. No paid API is involved.`,
     "4. **Evaluate.** Each candidate becomes a feature vector. Three things produce a probability: a logistic model trained on this app's own past outcomes, kernel-weighted analogues from the stock's own history of similar setups, and rules mined from outcomes. These are blended in log-odds and calibrated against how the model has actually performed.",
-    "5. **Decide.** Expected move minus round-trip cost gives an edge; the engine ranks on a risk-adjusted (lower-bound) edge and sizes with a quarter-Kelly fraction. If nothing clears the bar, the answer is no trade — which is a real answer, not a failure.",
-    "6. **Guardrails.** Position caps, minimum cash, daily and weekly loss breakers, cost checks, no leveraged products, and the kill switch all sit downstream and cannot be overridden.",
+    `5. **Decide.** Expected move minus round-trip cost gives an edge; the engine charges ${tuning.uncertaintyPenalty} standard error${tuning.uncertaintyPenalty === 1 ? "" : "s"} of estimation uncertainty against it, ranks on what survives, and sizes at ${(tuning.kellyFraction * 100).toFixed(0)}% of Kelly. If nothing clears the bar, the answer is no trade — which is a real answer, not a failure.`,
+    "6. **Guardrails.** Position caps, minimum cash, daily and weekly loss breakers, cost checks, no leveraged products, and the kill switch all sit downstream and cannot be overridden by anything above.",
     "7. **Execute and learn.** Buy near the close, sell at the next open, then record the overnight return for *every* shortlisted name — picked or not. Those counterfactuals are what trains the model, so it gets sharper every single day.",
     "",
-    "Everything above runs inside this app on Vercel. There is no AI provider and no per-run cost.",
+    "Everything above runs inside this app on Vercel. There is no AI provider and no per-run cost, and every number in steps 2 to 5 is adjustable on the Settings page.",
   ].join("\n");
 }
 
 function answerHelp(): string {
   return [
-    "I answer from the app's own data — the Trading 212 account, past runs, the decision model and its learned rules. Things you can ask:",
+    "I answer from the app's own data — the Trading 212 account, past runs, the decision model, its learned rules and its current configuration. Things you can ask:",
     "- *How is my account doing?* — balance and open positions, live from Trading 212",
     "- *What's the status?* — mode, scheduler, markets, guardrail switches",
     "- *How have we performed?* — win rate, averages, picks vs the rest of the shortlist",
     "- *Why did it pick AAPL?* or *why no trade?* — the actual numbers behind the decision",
     "- *Show the shortlist* — the latest run's candidates with probabilities and outcomes",
     "- *What has the model learned?* — calibration, feature weights, mined rules",
+    "- *What are you weighing most heavily?* — the features currently driving decisions",
+    "- *How are you configured?* — every tuning parameter and anything moved off its default",
+    "- *What does the Kelly fraction do?* — a plain explanation of any single setting",
+    "- *What if I raised the uncertainty charge?* — the consequence of moving a setting",
+    "- *What does a trade cost?* — the round-trip cost model for each market",
     "- *How does it work?* — the full pipeline",
     "",
     "I do not browse the web and I never guess: if the data is not in the app, I will tell you.",
   ].join("\n");
 }
 
+/** Renders a stored tuning value the way the Settings page shows it. */
+function showParam(p: TuningParam, tuning: QuantTuning): string {
+  const v = tuning[p.key];
+  if (typeof v === "boolean") return v ? "on" : "off";
+  const scaled = Math.round(v * (p.scale ?? 1) * 1000) / 1000;
+  if (!p.unit) return String(scaled);
+  // "%" and "×" read wrong with a space; word-like units need one.
+  return /^[%×]$/.test(p.unit) ? `${scaled}${p.unit}` : `${scaled} ${p.unit}`;
+}
+
+/** Finds the setting a question is about, by key or by words from its label. */
+function findParam(q: string): TuningParam | null {
+  const lower = q.toLowerCase();
+  const direct = TUNING_PARAMS.find((p) => lower.includes(p.key.toLowerCase()));
+  if (direct) return direct;
+
+  let best: { p: TuningParam; score: number } | null = null;
+  for (const p of TUNING_PARAMS) {
+    const words = p.label.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+    if (words.length === 0) continue;
+    const hits = words.filter((w) => lower.includes(w)).length;
+    if (hits === 0) continue;
+    const score = hits / words.length;
+    if (!best || score > best.score) best = { p, score };
+  }
+  return best && best.score >= 0.5 ? best.p : null;
+}
+
+async function answerTuning(q: string): Promise<string> {
+  const tuning = (await getSettings()).quant;
+  const one = findParam(q);
+
+  if (one) {
+    const changed = tuning[one.key] !== DEFAULT_TUNING[one.key];
+    return [
+      `**${one.label}** — currently ${showParam(one, tuning)}${changed ? ` (default is ${showParam(one, DEFAULT_TUNING)})` : " (the default)"}`,
+      "",
+      one.hint,
+      "",
+      `It lives under *${GROUP_META[one.group].title}* in Settings, and takes effect on the next run.`,
+    ].join("\n");
+  }
+
+  const changedParams = TUNING_PARAMS.filter((p) => tuning[p.key] !== DEFAULT_TUNING[p.key]);
+  const lines = ["**How I am configured**", ""];
+  for (const group of TUNING_GROUPS) {
+    const params = TUNING_PARAMS.filter((p) => p.group === group);
+    lines.push(`*${GROUP_META[group].title}*`);
+    for (const p of params) {
+      const isChanged = tuning[p.key] !== DEFAULT_TUNING[p.key];
+      lines.push(`- ${p.label}: ${showParam(p, tuning)}${isChanged ? ` (moved from ${showParam(p, DEFAULT_TUNING)})` : ""}`);
+    }
+    lines.push("");
+  }
+  lines.push(
+    changedParams.length === 0
+      ? "Everything is on its shipped default. Ask me what any single setting does, or change it on the Settings page."
+      : `${changedParams.length} setting${changedParams.length === 1 ? " is" : "s are"} away from the default. Ask *what does X do* for any of them.`,
+  );
+  return lines.join("\n");
+}
+
+/** Explains the direction of travel if a setting is moved, using the registry's stated consequence. */
+async function answerWhatIf(q: string): Promise<string> {
+  const p = findParam(q);
+  if (!p) {
+    return [
+      "Tell me which setting you mean and I will explain what moving it does — for example *what if I raised the Kelly fraction*, *what if I turned off the earnings veto*, or *what if I lowered the minimum turnover*.",
+      "",
+      "Ask *how are you configured* to see the full list.",
+    ].join("\n");
+  }
+
+  const tuning = (await getSettings()).quant;
+  const direction = /\b(rais|increas|higher|more|up|bigger|loosen)\w*\b/i.test(q) ? "up" : /\b(lower|decreas|reduc|less|down|smaller|tighten)\w*\b/i.test(q) ? "down" : null;
+
+  const lines = [`**${p.label}** is currently ${showParam(p, tuning)}.`, "", p.hint];
+  if (p.kind === "number" && direction) {
+    lines.push(
+      "",
+      direction === "up"
+        ? `Moving it up pushes behaviour toward the second half of that description; the range I accept is ${p.min} to ${p.max}${p.unit ? ` ${p.unit}` : ""}.`
+        : `Moving it down pushes behaviour toward the first half of that description; the range I accept is ${p.min} to ${p.max}${p.unit ? ` ${p.unit}` : ""}.`,
+    );
+  }
+  lines.push(
+    "",
+    "Nothing is retroactive: the change applies to the next run, and every past decision keeps the numbers it was actually made with. The safety limits are enforced separately and are unaffected.",
+  );
+  return lines.join("\n");
+}
+
+async function answerCosts(): Promise<string> {
+  const tuning = (await getSettings()).quant;
+  const typical = { atrPct: 2, dollarVolume: 5e7 };
+  const us = roundTripCostPct("US", typical, tuning);
+  const uk = roundTripCostPct("UK", typical, tuning);
+  return [
+    "**What a round trip costs**",
+    "I assume a cost before I assume a profit, because a trade that cannot clear its own costs is not a trade.",
+    "",
+    `- Typical US name: about ${pct(us)} round trip, plus ${pct(tuning.openingAuctionSlippagePct)} demanded for selling into the opening auction.`,
+    `- Typical UK name: about ${pct(uk)} round trip, higher because UK buys pay ${pct(tuning.ukStampDutyPct)} stamp duty.`,
+    `- FX conversion: ${pct(tuning.fxFeePctPerSide)} on each side of a non-GBP trade.`,
+    tuning.extraCostBufferPct > 0 ? `- Your extra safety buffer adds ${pct(tuning.extraCostBufferPct)} on top of all of the above.` : null,
+    "",
+    "The spread portion is not a constant: it is estimated per name from its own volatility and turnover, so an illiquid, jumpy stock is charged more than a mega-cap. Expected move has to beat all of it before I will act.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 const INTENTS: Intent[] = [
   { name: "help", test: /\b(help|what can you (do|answer)|commands)\b/i, run: async () => answerHelp() },
-  { name: "how", test: /\b(how does (it|this|the system)|how do you (work|decide)|explain the (system|pipeline|process)|what do you do)\b/i, run: async () => answerHow() },
+  { name: "whatif", test: /\b(what if|what would happen|if i (rais|lower|increas|decreas|turn|change|set)|should i (rais|lower|increas|decreas|change))\w*/i, run: answerWhatIf },
+  { name: "how", test: /\b(how does (it|this|the system)|how do you (work|decide)|explain the (system|pipeline|process)|what do you do)\b/i, run: answerHow },
+  { name: "costs", test: /\b(cost|fee|commission|stamp duty|spread|slippage|fx|break ?even)\b/i, run: async () => answerCosts() },
+  { name: "tuning", test: /\b(configur|tuning|parameter|setting|knob|dial|what does .* (do|mean)|how are you set)\w*/i, run: answerTuning },
   { name: "why", test: /\b(why|reason|thesis|justif|explain the (decision|pick|trade))\b/i, run: answerWhy },
   { name: "shortlist", test: /\b(shortlist|candidates|what did it look at|watchlist)\b/i, run: answerShortlist },
-  { name: "model", test: /\b(model|calibrat|weights|learned|learning|confidence bucket|how smart)\b/i, run: answerModel },
+  { name: "model", test: /\b(model|calibrat|weights?|weigh(ing|s)?|learned|learning|confidence bucket|how smart)\b/i, run: answerModel },
   { name: "lessons", test: /\b(lesson|rule)s?\b/i, run: answerLessons },
   { name: "performance", test: /\b(perform|track record|win rate|p ?& ?l|pnl|profit|how are we doing|results?)\b/i, run: answerPerformance },
   { name: "account", test: /\b(account|balance|cash|position|holding|portfolio|equity|how much (money|do i))\b/i, run: answerAccount },
-  { name: "status", test: /\b(status|scheduler|cron|running|mode|kill ?switch|settings|online)\b/i, run: answerStatus },
+  { name: "status", test: /\b(status|scheduler|cron|running|mode|kill ?switch|online)\b/i, run: answerStatus },
   { name: "history", test: /\b(history|recent runs?|last (run|trade|night)|yesterday|past trades?)\b/i, run: answerHistory },
 ];
 
@@ -256,7 +379,7 @@ async function overview(): Promise<string> {
     "",
     perf,
     "",
-    "Ask me *why did it pick X*, *show the shortlist*, *what has the model learned* or *how does it work* for more detail.",
+    "Ask me *why did it pick X*, *show the shortlist*, *what has the model learned*, *how are you configured* or *how does it work* for more detail.",
   ].join("\n");
 }
 
