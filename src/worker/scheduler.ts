@@ -12,6 +12,7 @@ import { setRunStatus, stageDecide, stageResearch, stageScreen } from "./pipelin
 import { executeBuy } from "./execute";
 import { executeExit } from "./exit";
 import { scoreOutcomes } from "./outcomes";
+import { runLearningCycle } from "../lib/quant/learn";
 
 const { runs, decisions, trades, equitySnapshots, orders, candidates } = schema;
 
@@ -26,10 +27,10 @@ const realClock: SchedulerDeps = { now: () => new Date() };
 
 /** One tick may use at most this long (Vercel's function limit is 300s). */
 export const TICK_BUDGET_MS = 270_000;
-/** Don't start new research calls after this point in a tick; a call can take ~90s. */
-const RESEARCH_CUTOFF_MS = 160_000;
-/** Don't begin the (slow) decision call with less than this left in the tick. */
-const DECIDE_MIN_REMAINING_MS = 110_000;
+/** Don't start new research work after this point in a tick; one candidate takes a few seconds. */
+const RESEARCH_CUTOFF_MS = 210_000;
+/** The decision itself is local arithmetic, so it only needs room for the account/guardrail calls. */
+const DECIDE_MIN_REMAINING_MS = 25_000;
 
 export interface TickResult {
   ran: boolean;
@@ -237,6 +238,12 @@ export async function tick(deps: SchedulerDeps = realClock): Promise<TickResult>
       try {
         if (await every("equity", 15 * 60_000, nowMs)) await snapshotEquity(deps);
         if (await every("outcomes", 60 * 60_000, nowMs)) await scoreOutcomes();
+        // Learning does not depend on having traded: every shortlisted name that gets scored is a
+        // labelled example, so the model keeps improving through NO_TRADE days too.
+        if (await every("learning", 6 * 3_600_000, nowMs)) {
+          const { trained, activeRules } = await runLearningCycle();
+          if (trained > 0) await log("info", "learning", `Trained on ${trained} new outcome(s); ${activeRules} rule(s) active.`);
+        }
       } catch (err) {
         await warnOnce("housekeeping", `Housekeeping failed: ${String(err).slice(0, 200)}`, undefined, nowMs);
       }

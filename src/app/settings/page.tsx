@@ -13,7 +13,7 @@ export default async function SettingsPage() {
       <PageHeader title="Settings" subtitle="Connect your accounts, tune the safety limits and manage access. Changes save instantly." />
       <div className="space-y-6">
         <ConnectionsForm initial={await connectionStatus()} />
-        <SettingsForm settings={settings} t212Env={env.t212Env} hasT212Keys={env.hasT212Keys} hasAI={env.hasAI} />
+        <SettingsForm settings={settings} t212Env={env.t212Env} hasT212Keys={env.hasT212Keys} />
         <PasswordForm />
       </div>
     </>

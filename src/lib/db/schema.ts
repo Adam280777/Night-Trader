@@ -85,6 +85,10 @@ export const candidates = sqliteTable(
     name: text("name"),
     screenScore: real("screen_score"),
     signals: text("signals", { mode: "json" }).$type<Record<string, number | string | null>>(),
+    /** The model's input vector for this candidate, kept so outcomes can train the model later. */
+    features: text("features", { mode: "json" }).$type<Record<string, number>>(),
+    /** What the engine thought of this candidate: probability, edge, attributions. */
+    evaluation: text("evaluation", { mode: "json" }),
     researchSummary: text("research_summary"),
     research: text("research", { mode: "json" }),
     picked: integer("picked", { mode: "boolean" }).notNull().default(false),
@@ -149,8 +153,38 @@ export const lessons = sqliteTable("lessons", {
   tradeId: integer("trade_id").references(() => trades.id),
   text: text("text").notNull(),
   tags: text("tags", { mode: "json" }).$type<string[]>().notNull().default([]),
+  /**
+   * Machine-readable form of the lesson. When present the decision engine applies `adjustment` to
+   * the log-odds of any candidate matching the rule, so a lesson changes behaviour rather than
+   * merely being recorded.
+   */
+  rule: text("rule", { mode: "json" }).$type<{
+    feature: string;
+    min: number | null;
+    max: number | null;
+    market: "US" | "UK" | null;
+    samples: number;
+    winRate: number;
+    avgReturnPct: number;
+    pValue: number;
+    adjustment: number;
+  } | null>(),
   active: integer("active", { mode: "boolean" }).notNull().default(true),
   createdAt: createdAt(),
+});
+
+/**
+ * Learned parameters of the decision model: coefficients, online standardisation statistics and the
+ * calibration curve. One row per model name so a future model can be trained alongside the live one.
+ */
+export const modelState = sqliteTable("model_state", {
+  name: text("name").primaryKey(),
+  version: integer("version").notNull().default(1),
+  samples: integer("samples").notNull().default(0),
+  state: text("state", { mode: "json" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .notNull()
+    .$defaultFn(() => new Date()),
 });
 
 export const equitySnapshots = sqliteTable("equity_snapshots", {

@@ -2,7 +2,8 @@ import { and, asc, desc, eq, inArray, isNotNull, notInArray } from "drizzle-orm"
 import { getDb, schema } from "./db";
 import { getEnvConfig, getSettings } from "./config";
 import { getAccountState, pnlWindows, tryClient, type AccountState } from "./account";
-import { getActiveLessons, getPerformanceStats } from "./ai/memory";
+import { getActiveLessons, getPerformanceStats } from "./quant/memory";
+import { getModelReport } from "./quant/learn";
 
 const { runs, decisions, trades, candidates, orders, equitySnapshots, eventLog, lessons } = schema;
 
@@ -21,7 +22,7 @@ export async function getWorkerStatus() {
 
 export async function getEnvStatus() {
   const e = await getEnvConfig();
-  return { t212Env: e.t212Env, hasT212Keys: !!(e.t212Key && e.t212Secret), hasAI: !!e.ai.key, aiProvider: e.ai.provider, model: e.ai.model };
+  return { t212Env: e.t212Env, hasT212Keys: !!(e.t212Key && e.t212Secret) };
 }
 
 export async function getAccountSafe(): Promise<{ account: AccountState | null; error?: string }> {
@@ -95,7 +96,7 @@ export async function getRunDetail(runId: number) {
 
 export async function getLearning() {
   const db = getDb();
-  const [stats, closed, scored, noTrade, active] = await Promise.all([
+  const [stats, closed, scored, noTrade, active, model] = await Promise.all([
     getPerformanceStats(),
     db
       .select({ date: runs.tradingDate, ticker: trades.ticker, pnlPct: trades.pnlPct, confidence: decisions.confidence, expected: decisions.expectedMovePct })
@@ -112,8 +113,9 @@ export async function getLearning() {
       .orderBy(desc(candidates.id)),
     db.select({ id: runs.id }).from(runs).where(inArray(runs.status, ["no_trade", "blocked"])),
     getActiveLessons(100),
+    getModelReport(),
   ]);
-  return { stats, closed, scored, lessons: active, noTradeDays: noTrade.length };
+  return { stats, closed, scored, lessons: active, noTradeDays: noTrade.length, model };
 }
 
 export async function getSettingsView() {

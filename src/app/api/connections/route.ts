@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getEnvConfig, updateSettings, writeConnection } from "@/lib/config";
-import { connectionStatus, testAI, testT212 } from "@/lib/connections";
+import { connectionStatus, testT212 } from "@/lib/connections";
 import { openTrade } from "@/lib/account";
-import { PROVIDER_IDS } from "@/lib/ai/providers";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +10,6 @@ const Body = z.object({
   t212Env: z.enum(["demo", "live"]).optional(),
   t212Key: z.string().trim().max(500).optional(),
   t212Secret: z.string().trim().max(500).optional(),
-  aiProvider: z.enum(PROVIDER_IDS).optional(),
-  aiKey: z.string().trim().max(500).optional(),
-  aiModel: z.string().trim().max(100).optional(),
 });
 
 export async function GET() {
@@ -27,38 +23,28 @@ export async function PUT(req: Request) {
   const b = parsed.data;
   const cur = await getEnvConfig();
   const results: Record<string, { ok: boolean; detail: string }> = {};
-  const save: Parameters<typeof writeConnection>[0] = {};
 
   const t212Changed = b.t212Key || b.t212Secret || (b.t212Env && b.t212Env !== cur.t212Env);
   if (t212Changed) {
-    if (await openTrade()) return NextResponse.json({ error: "A position is currently open. Change Trading 212 settings after it has been sold." }, { status: 409 });
+    if (await openTrade()) {
+      return NextResponse.json({ error: "A position is currently open. Change Trading 212 settings after it has been sold." }, { status: 409 });
+    }
     const env = b.t212Env ?? cur.t212Env;
     const r = await testT212(env, b.t212Key || cur.t212Key, b.t212Secret || cur.t212Secret);
     results.t212 = r;
-    if (r.ok) Object.assign(save, { t212Env: env, t212Key: b.t212Key, t212Secret: b.t212Secret });
+    if (r.ok) {
+      await writeConnection({ t212Env: env, t212Key: b.t212Key, t212Secret: b.t212Secret });
+      // A different account or environment must never inherit an earlier live confirmation.
+      await updateSettings({ liveConfirmed: false });
+    }
   }
 
-  const provider = b.aiProvider ?? cur.aiProvider;
-  const curP = cur.providers[provider];
-  const aiChanged = b.aiKey || provider !== cur.aiProvider || (b.aiModel && b.aiModel !== curP.model);
-  if (aiChanged) {
-    const model = b.aiModel || curP.model;
-    const r = await testAI(provider, b.aiKey || curP.key, model);
-    results.ai = r;
-    if (r.ok) Object.assign(save, { aiProvider: provider, ai: { provider, key: b.aiKey, model } });
-  }
-
-  if (Object.keys(save).length > 0) {
-    await writeConnection(save);
-    // A different account or environment must never inherit an earlier live confirmation.
-    if (results.t212?.ok) await updateSettings({ liveConfirmed: false });
-  }
   return NextResponse.json({ results, status: await connectionStatus() });
 }
 
 /** Tests the currently saved keys without changing anything. */
 export async function POST() {
   const c = await getEnvConfig();
-  const [t212, ai] = await Promise.all([testT212(c.t212Env, c.t212Key, c.t212Secret), testAI(c.ai.provider, c.ai.key, c.ai.model)]);
-  return NextResponse.json({ results: { t212, ai }, status: await connectionStatus() });
+  const t212 = await testT212(c.t212Env, c.t212Key, c.t212Secret);
+  return NextResponse.json({ results: { t212 }, status: await connectionStatus() });
 }

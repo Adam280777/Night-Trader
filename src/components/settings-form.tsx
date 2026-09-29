@@ -8,7 +8,6 @@ interface Props {
   settings: Settings;
   t212Env: "demo" | "live";
   hasT212Keys: boolean;
-  hasAI: boolean;
 }
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -52,7 +51,7 @@ function Num({ value, onCommit, step = 1, suffix }: { value: number; onCommit: (
   );
 }
 
-export function SettingsForm({ settings, t212Env, hasT212Keys, hasAI }: Props) {
+export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
   const router = useRouter();
   const [s, setS] = useState(settings);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -78,7 +77,7 @@ export function SettingsForm({ settings, t212Env, hasT212Keys, hasAI }: Props) {
         <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Trading mode</h2>
         <Row label="Connection" hint="Change these in API connections above.">
           <span className="text-sm">
-            Trading 212 <b>{t212Env}</b> · keys {hasT212Keys ? "found" : <b className="text-danger">missing</b>} · AI key {hasAI ? "found" : <b className="text-danger">missing</b>}
+            Trading 212 <b>{t212Env}</b> · keys {hasT212Keys ? "found" : <b className="text-danger">missing</b>} · decisions made locally by the built-in model
           </span>
         </Row>
         <Row label="Place orders" hint="Off = dry run: the AI does all its research and decisions, and results are simulated from real prices. No orders are sent.">

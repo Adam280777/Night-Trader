@@ -1,6 +1,5 @@
 import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { getDb, schema } from "../db";
-
 const { trades, decisions, lessons, candidates, runs } = schema;
 
 export interface PerfStats {
@@ -85,11 +84,12 @@ export async function getActiveLessons(limit = 25) {
   return getDb().select().from(lessons).where(eq(lessons.active, true)).orderBy(desc(lessons.createdAt)).limit(limit);
 }
 
-export function formatMemoryForPrompt(stats: PerfStats, ls: { text: string; tags: string[] }[]): string {
+/** A compact plain-text summary of the track record, used by the dashboard chat. */
+export function formatPerformanceSummary(stats: PerfStats, ls: { text: string; tags: string[] }[]): string {
   const pct = (x: number | null) => (x == null ? "n/a" : `${x.toFixed(2)}%`);
-  const lines: string[] = ["## Your track record"];
+  const lines: string[] = ["## Track record"];
   if (stats.closedTrades === 0) {
-    lines.push("No closed trades yet. Be conservative: NO_TRADE is a good answer when the edge is unclear.");
+    lines.push("No closed trades yet.");
   } else {
     lines.push(
       `Closed trades: ${stats.closedTrades}, win rate ${((stats.winRate ?? 0) * 100).toFixed(0)}%, avg ${pct(stats.avgPnlPct)} (wins ${pct(stats.avgWinPct)}, losses ${pct(stats.avgLossPct)}), total P&L ${stats.totalPnl.toFixed(2)}.`,
@@ -98,12 +98,12 @@ export function formatMemoryForPrompt(stats: PerfStats, ls: { text: string; tags
     for (const m of stats.byMarket) lines.push(`- ${m.market}: ${m.n} trades, win ${(m.winRate * 100).toFixed(0)}%, avg ${pct(m.avgPnlPct)}`);
     if (stats.shortlistAvgOvernightPct != null && stats.pickedAvgOvernightPct != null) {
       lines.push(
-        `Shortlist average overnight return ${pct(stats.shortlistAvgOvernightPct)} vs your picks ${pct(stats.pickedAvgOvernightPct)} (are you beating the screener?).`,
+        `Shortlist average overnight return ${pct(stats.shortlistAvgOvernightPct)} vs picks ${pct(stats.pickedAvgOvernightPct)} (is the engine beating its own screener?).`,
       );
     }
     lines.push("Last trades: " + stats.recent.map((r) => `${r.date} ${r.ticker} ${pct(r.pnlPct)}`).join("; "));
   }
-  lines.push("", "## Lessons you wrote after past trades");
+  lines.push("", "## Rules learned from outcomes");
   if (ls.length === 0) lines.push("(none yet)");
   for (const l of ls) lines.push(`- ${l.text}${l.tags.length ? ` [${l.tags.join(", ")}]` : ""}`);
   return lines.join("\n");

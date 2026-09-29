@@ -6,7 +6,7 @@ import { EquityChart } from "@/components/charts";
 import { STATUS, money, pct, tone, when } from "@/lib/format";
 import { getAccountSafe, getEnvStatus, getEquitySeries, getFeaturedRun, getOpenTrade, getPnlWindows, getRecentEvents, getUnknownOrders, getWorkerStatus } from "@/lib/queries";
 import { currentMode, getSettings } from "@/lib/config";
-import { getPerformanceStats } from "@/lib/ai/memory";
+import { getPerformanceStats } from "@/lib/quant/memory";
 export const dynamic = "force-dynamic";
 
 const STEPS = ["Screen", "Research", "Decide", "Approve", "Buy", "Hold", "Sell"];
@@ -76,8 +76,7 @@ export default async function Dashboard() {
 
       <div className="mb-6 space-y-3 empty:hidden">
         {!worker.alive && <Notice tone="bad">The cloud scheduler has not checked in for a few minutes, so nothing will be researched, bought or sold. Check that the external timer (cron-job.org or GitHub Actions) is calling <code className="font-mono">/api/cron/tick</code> every minute.</Notice>}
-        {!env.hasAI && <Notice tone="bad">No AI API key is set for {env.aiProvider} (add one in Settings), so the AI cannot research or decide.</Notice>}
-        {!env.hasT212Keys && <Notice tone="warn">Trading 212 keys are missing (add them in Settings). The stock universe and market schedule come from Trading 212, so the AI cannot run yet.</Notice>}
+        {!env.hasT212Keys && <Notice tone="warn">Trading 212 keys are missing (add them in Settings). The stock universe and market schedule come from Trading 212, so no run can start yet.</Notice>}
         {acctError && <Notice tone="warn">Could not read your Trading 212 account: {acctError}</Notice>}
         {settings.killSwitch && <Notice tone="warn">Kill switch is ON. No new trades will be started. An open position will still be sold at the next open.</Notice>}
         {unknown.map((o) => (

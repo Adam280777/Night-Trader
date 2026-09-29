@@ -1,17 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, XCircle } from "lucide-react";
-import { PROVIDERS, PROVIDER_IDS, type Provider } from "@/lib/ai/providers";
 
 interface Status {
   t212Env: "demo" | "live";
   hasT212Keys: boolean;
   t212Source: string | null;
   t212KeyHint: string | null;
-  aiProvider: Provider;
-  providers: Record<Provider, { has: boolean; source: string | null; keyHint: string | null; model: string }>;
 }
 type Result = { ok: boolean; detail: string };
 
@@ -33,9 +30,6 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
   const [env, setEnv] = useState(initial.t212Env);
   const [key, setKey] = useState("");
   const [secret, setSecret] = useState("");
-  const [provider, setProvider] = useState<Provider>(initial.aiProvider);
-  const [aiKey, setAiKey] = useState("");
-  const [model, setModel] = useState(initial.providers[initial.aiProvider].model);
   const [res, setRes] = useState<Record<string, Result>>({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -52,7 +46,6 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
       if (Object.values(j.results as Record<string, Result>).some((x) => x.ok)) {
         setKey("");
         setSecret("");
-        setAiKey("");
       }
       router.refresh();
     } catch {
@@ -62,54 +55,16 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
     }
   }
 
-  const info = PROVIDERS[provider];
-  const cur = st.providers[provider];
-  const changed = !!(key || secret || aiKey || env !== st.t212Env || provider !== st.aiProvider || model !== cur.model);
-  const [live, setLive] = useState<string[]>([]);
-  const [modelNote, setModelNote] = useState<string | null>(null);
-
-  const loadModels = useCallback(async (p: Provider, k: string, current: string) => {
-    try {
-      const r = await fetch("/api/connections/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: p, key: k || undefined }) });
-      const j = await r.json();
-      if (!j.ok) {
-        setLive([]);
-        return setModelNote(j.detail ?? "Could not load models");
-      }
-      setLive(j.models);
-      setModelNote(`${j.models.length} models available for this key.`);
-      if (!j.models.includes(current) && j.suggested) setModel(j.suggested);
-    } catch {
-      setModelNote("Could not load models");
-    }
-  }, []);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount
-    if (initial.providers[initial.aiProvider].has) void loadModels(initial.aiProvider, "", initial.providers[initial.aiProvider].model);
-  }, [initial, loadModels]);
-
-  useEffect(() => {
-    if (aiKey.length < 20) return;
-    const t = setTimeout(() => void loadModels(provider, aiKey, model), 600);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiKey, provider, loadModels]);
-
-  function pickProvider(p: Provider) {
-    setProvider(p);
-    setModel(st.providers[p].model);
-    setAiKey("");
-    setLive([]);
-    setModelNote(st.providers[p].has ? null : "Paste your key and the available models will load here.");
-    if (st.providers[p].has) void loadModels(p, "", st.providers[p].model);
-  }
+  const changed = !!(key || secret || env !== st.t212Env);
   const source = (s: string | null) => (s === "settings" ? "saved in Settings" : s === "environment" ? "from environment" : "not set");
 
   return (
     <section className="rounded-xl border border-border bg-surface p-5">
       <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">API connections</h2>
-      <p className="mb-4 text-xs text-muted">Keys are checked against the real service before they are saved, encrypted on the server, and never sent back to your browser. Leave a box empty to keep the current value.</p>
+      <p className="mb-4 text-xs text-muted">
+        Trading 212 is the only external service this app needs. Keys are checked against the real service before they are saved, encrypted on the
+        server, and never sent back to your browser. Leave a box empty to keep the current value.
+      </p>
 
       <div className="grid gap-6 md:grid-cols-2">
         <div>
@@ -126,31 +81,11 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
         </div>
 
         <div>
-          <h3 className="mb-2 text-sm font-medium">AI provider <span className="text-xs font-normal text-muted">· {cur.has ? `${cur.keyHint} (${source(cur.source)})` : "no key yet"}</span></h3>
-          <div className="space-y-2">
-            <select value={provider} onChange={(e) => pickProvider(e.target.value as Provider)} className={input} aria-label="AI provider">
-              {PROVIDER_IDS.map((id) => (
-                <option key={id} value={id}>
-                  {PROVIDERS[id].label}
-                  {st.providers[id].has ? " (key saved)" : ""}
-                </option>
-              ))}
-            </select>
-            <input type="password" autoComplete="off" value={aiKey} onChange={(e) => setAiKey(e.target.value)} placeholder={info.keyPlaceholder} className={input} />
-            <select value={model} onChange={(e) => setModel(e.target.value)} className={input} aria-label="Model">
-              {[...new Set([model, ...(live.length ? live : info.models)])].map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-            <button type="button" onClick={() => loadModels(provider, aiKey, model)} disabled={!aiKey && !cur.has} className="text-xs text-accent underline disabled:opacity-40">
-              Refresh model list
-            </button>
-            {modelNote && <p className="text-xs text-muted">{modelNote}</p>}
-            <p className="text-xs text-muted">Get a key at {info.keyUrl}. Each provider keeps its own saved key, so you can switch back and forth.</p>
-          </div>
-          <Verdict r={res.ai} />
+          <h3 className="mb-2 text-sm font-medium">Market data and decisions</h3>
+          <p className="text-xs text-muted">
+            Prices, history and headlines come from Yahoo Finance, which needs no key. Every decision is made by the built-in model that runs inside
+            this app and trains on its own results, so there is no AI provider to configure and nothing to pay per run.
+          </p>
         </div>
       </div>
 
@@ -158,7 +93,7 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
       <div className="mt-4 flex flex-wrap gap-2">
         <button
           disabled={busy || !changed}
-          onClick={() => call("PUT", { t212Env: env, t212Key: key || undefined, t212Secret: secret || undefined, aiProvider: provider, aiKey: aiKey || undefined, aiModel: model })}
+          onClick={() => call("PUT", { t212Env: env, t212Key: key || undefined, t212Secret: secret || undefined })}
           className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:text-black"
         >
           {busy ? "Checking…" : "Verify & save"}
