@@ -12,10 +12,10 @@ const g = globalThis as unknown as { __db?: Db; __migrated?: Promise<void> };
 /** Turso (hosted) when TURSO_DATABASE_URL is set, otherwise a local SQLite file. */
 export function getDb(): Db {
   if (g.__db) return g.__db;
-  const remote = process.env.TURSO_DATABASE_URL;
+  const remote = process.env.TURSO_DATABASE_URL || process.env.STORAGE_TURSO_DATABASE_URL;
   let client;
   if (remote) {
-    client = createClient({ url: remote, authToken: process.env.TURSO_AUTH_TOKEN });
+    client = createClient({ url: remote, authToken: process.env.TURSO_AUTH_TOKEN || process.env.STORAGE_TURSO_AUTH_TOKEN });
   } else {
     if (process.env.VERCEL) throw new Error("TURSO_DATABASE_URL is not set");
     const file = path.resolve(/*turbopackIgnore: true*/ process.env.DATABASE_PATH ?? "./data/trader.db");
