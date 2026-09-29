@@ -5,7 +5,7 @@ config();
 
 async function main() {
   const { ensureMigrated } = await import("../src/lib/db");
-  await ensureMigrated();
+  await ensureMigrated({ force: true });
   console.log("Database is up to date.");
 }
 main().catch((e) => {
