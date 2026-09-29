@@ -6,8 +6,8 @@ import { getHistory } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
-export default function History() {
-  const rows = getHistory(200);
+export default async function History() {
+  const rows = await getHistory(200);
   return (
     <>
       <AutoRefresh seconds={30} />

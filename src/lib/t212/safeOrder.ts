@@ -24,37 +24,36 @@ export interface SubmitArgs {
 export async function submitMarketOrder(a: SubmitArgs): Promise<{ orderRowId: number; status: "sent" | "rejected" | "unknown"; t212OrderId?: number }> {
   const db = getDb();
   const intentAt = Date.now();
-  const row = db
+  const [row] = await db
     .insert(schema.orders)
     .values({ decisionId: a.decisionId, runId: a.runId, side: a.side, ticker: a.ticker, quantity: a.quantity, status: "intent" })
-    .returning({ id: schema.orders.id })
-    .get();
+    .returning({ id: schema.orders.id });
 
   const signed = a.side === "BUY" ? a.quantity : -a.quantity;
   const update = (v: Partial<typeof schema.orders.$inferInsert>) =>
-    db.update(schema.orders).set({ ...v, updatedAt: new Date() }).where(eq(schema.orders.id, row.id)).run();
+    db.update(schema.orders).set({ ...v, updatedAt: new Date() }).where(eq(schema.orders.id, row.id));
 
   try {
     const o = await a.client.placeMarketOrder(a.ticker, signed, false);
-    update({ status: "sent", t212OrderId: String(o.id), raw: o });
-    log("info", "order", `${a.side} ${a.quantity} ${a.ticker} accepted (T212 id ${o.id}, status ${o.status})`, a.runId);
+    await update({ status: "sent", t212OrderId: String(o.id), raw: o });
+    await log("info", "order", `${a.side} ${a.quantity} ${a.ticker} accepted (T212 id ${o.id}, status ${o.status})`, a.runId);
     return { orderRowId: row.id, status: "sent", t212OrderId: o.id };
   } catch (err) {
     if (err instanceof OrderOutcomeUnknownError) {
-      log("warn", "order", `${err.message}. Reconciling instead of retrying.`, a.runId);
+      await log("warn", "order", `${err.message}. Reconciling instead of retrying.`, a.runId);
       const found = await findOrderSince(a.client, a.ticker, a.side, intentAt - 5_000);
       if (found) {
-        update({ status: "sent", t212OrderId: String(found.id), raw: found });
-        log("info", "order", `Reconciled: order ${found.id} exists (${found.status}).`, a.runId);
+        await update({ status: "sent", t212OrderId: String(found.id), raw: found });
+        await log("info", "order", `Reconciled: order ${found.id} exists (${found.status}).`, a.runId);
         return { orderRowId: row.id, status: "sent", t212OrderId: found.id };
       }
-      update({ status: "unknown", error: err.message });
-      log("error", "order", `Order outcome UNKNOWN for ${a.side} ${a.ticker}; trading paused for manual check.`, a.runId);
+      await update({ status: "unknown", error: err.message });
+      await log("error", "order", `Order outcome UNKNOWN for ${a.side} ${a.ticker}; trading paused for manual check.`, a.runId);
       return { orderRowId: row.id, status: "unknown" };
     }
     const msg = err instanceof T212Error ? `${err.message} ${JSON.stringify(err.body ?? {})}` : String(err);
-    update({ status: "rejected", error: msg });
-    log("error", "order", `Order rejected: ${msg}`, a.runId);
+    await update({ status: "rejected", error: msg });
+    await log("error", "order", `Order rejected: ${msg}`, a.runId);
     return { orderRowId: row.id, status: "rejected" };
   }
 }
@@ -104,6 +103,7 @@ export async function findHistorical(client: T212Client, orderId: number): Promi
   return hist.find((h) => h.order.id === orderId) ?? null;
 }
 
-export function anyUnknownOrders(): boolean {
-  return !!getDb().select({ id: schema.orders.id }).from(schema.orders).where(eq(schema.orders.status, "unknown")).get();
+export async function anyUnknownOrders(): Promise<boolean> {
+  const rows = await getDb().select({ id: schema.orders.id }).from(schema.orders).where(eq(schema.orders.status, "unknown")).limit(1);
+  return rows.length > 0;
 }

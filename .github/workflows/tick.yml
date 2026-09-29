@@ -1,0 +1,20 @@
+# Free backup timer for the cloud scheduler. GitHub runs this roughly every 5 minutes (it can be delayed).
+# For exact one-minute timing use cron-job.org instead (see README).
+# Needs repository secrets: APP_URL (e.g. https://your-app.vercel.app) and CRON_SECRET.
+name: scheduler-tick
+on:
+  schedule:
+    - cron: "*/5 * * * 1-5"
+  workflow_dispatch: {}
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call the tick endpoint
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl --fail --silent --show-error --max-time 290 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/cron/tick"

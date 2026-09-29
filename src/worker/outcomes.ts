@@ -13,7 +13,7 @@ const { candidates, runs } = schema;
  */
 export async function scoreOutcomes(onlyRunId?: number): Promise<number> {
   const db = getDb();
-  const rows = db
+  const rows = await db
     .select({ c: candidates, run: runs })
     .from(candidates)
     .innerJoin(runs, eq(candidates.runId, runs.id))
@@ -32,7 +32,7 @@ export async function scoreOutcomes(onlyRunId?: number): Promise<number> {
       const ref = withDate.find((x) => x.d === run.tradingDate);
       const next = withDate.find((x) => x.d > run.tradingDate);
       if (!ref || !next) continue;
-      db.update(candidates)
+      await db.update(candidates)
         .set({
           refPrice: ref.b.close,
           nextOpenPrice: next.b.open,
@@ -42,7 +42,7 @@ export async function scoreOutcomes(onlyRunId?: number): Promise<number> {
         .run();
       scored++;
     } catch (err) {
-      log("warn", "outcomes", `Could not score ${c.ticker}: ${String(err).slice(0, 150)}`, run.id);
+      await log("warn", "outcomes", `Could not score ${c.ticker}: ${String(err).slice(0, 150)}`, run.id);
     }
   }
   return scored;

@@ -7,8 +7,8 @@ export const dynamic = "force-dynamic";
 
 const avg = (a: number[]) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
 
-export default function Learning() {
-  const { stats, closed, scored, lessons, noTradeDays } = getLearning();
+export default async function Learning() {
+  const { stats, closed, scored, lessons, noTradeDays } = await getLearning();
   const pickedAvg = avg(scored.filter((s) => s.picked).map((s) => s.ret!));
   const restAvg = avg(scored.filter((s) => !s.picked).map((s) => s.ret!));
   const allAvg = avg(scored.map((s) => s.ret!));

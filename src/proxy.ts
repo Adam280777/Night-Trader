@@ -1,12 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth";
 
-const PUBLIC = ["/login", "/api/auth/login"];
+const PUBLIC = ["/login", "/api/auth/login", "/api/cron/tick"]; // the tick endpoint authenticates itself with CRON_SECRET
 
-export function proxy(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (PUBLIC.includes(pathname)) return NextResponse.next();
-  if (verifySession(req.cookies.get(SESSION_COOKIE)?.value)) return NextResponse.next();
+  if (await verifySession(req.cookies.get(SESSION_COOKIE)?.value)) return NextResponse.next();
 
   if (pathname.startsWith("/api/")) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
   const url = new URL("/login", req.url);

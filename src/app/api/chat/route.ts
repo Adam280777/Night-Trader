@@ -12,7 +12,7 @@ You are talking to the person who owns the account. Answer using ONLY the data p
 Be candid about mistakes and uncertainty, never promise returns, and keep answers short and plain. This is not financial advice.`;
 
 export async function GET() {
-  const rows = getDb().select().from(schema.chatMessages).orderBy(asc(schema.chatMessages.id)).limit(200).all();
+  const rows = await getDb().select().from(schema.chatMessages).orderBy(asc(schema.chatMessages.id)).limit(200);
   return NextResponse.json(rows);
 }
 
@@ -21,7 +21,7 @@ export async function POST(req: Request) {
   if (!message?.trim()) return NextResponse.json({ error: "Empty message" }, { status: 400 });
   const db = getDb();
 
-  const history = getHistory(15).map(({ run, decision, trade }) => ({
+  const history = (await getHistory(15)).map(({ run, decision, trade }) => ({
     date: run.tradingDate,
     market: run.market,
     status: run.status,
@@ -34,16 +34,16 @@ export async function POST(req: Request) {
     resultPct: trade?.pnlPct,
     review: trade?.review,
   }));
-  const context = JSON.stringify({ stats: getPerformanceStats(), lessons: getActiveLessons(30).map((l) => l.text), recentRuns: history }, null, 1);
+  const context = JSON.stringify({ stats: await getPerformanceStats(), lessons: (await getActiveLessons(30)).map((l) => l.text), recentRuns: history }, null, 1);
 
-  const prior = db.select().from(schema.chatMessages).orderBy(desc(schema.chatMessages.id)).limit(8).all().reverse();
+  const prior = (await db.select().from(schema.chatMessages).orderBy(desc(schema.chatMessages.id)).limit(8)).reverse();
   const transcript = prior.map((m) => `${m.role === "user" ? "User" : "You"}: ${m.content}`).join("\n");
   const input = `## Data\n${context}\n\n## Conversation so far\n${transcript}\n\nUser: ${message.trim()}`;
 
-  db.insert(schema.chatMessages).values({ role: "user", content: message.trim() }).run();
+  await db.insert(schema.chatMessages).values({ role: "user", content: message.trim() }).run();
   try {
     const answer = await chatText(SYSTEM, input);
-    const row = db.insert(schema.chatMessages).values({ role: "assistant", content: answer }).returning().get();
+    const [row] = await db.insert(schema.chatMessages).values({ role: "assistant", content: answer }).returning();
     return NextResponse.json(row);
   } catch (err) {
     return NextResponse.json({ error: String(err).slice(0, 300) }, { status: 502 });

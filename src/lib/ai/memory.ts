@@ -20,9 +20,9 @@ export interface PerfStats {
 
 const avg = (a: number[]) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
 
-export function getPerformanceStats(): PerfStats {
+export async function getPerformanceStats(): Promise<PerfStats> {
   const db = getDb();
-  const rows = db
+  const rows = await db
     .select({
       pnl: trades.pnl,
       pnlPct: trades.pnlPct,
@@ -36,8 +36,7 @@ export function getPerformanceStats(): PerfStats {
     .innerJoin(decisions, eq(trades.decisionId, decisions.id))
     .innerJoin(runs, eq(trades.runId, runs.id))
     .where(and(eq(trades.status, "closed"), isNotNull(trades.pnlPct)))
-    .orderBy(desc(trades.exitAt))
-    .all();
+    .orderBy(desc(trades.exitAt));
 
   const pcts = rows.map((r) => r.pnlPct!);
   const wins = pcts.filter((p) => p > 0);
@@ -56,11 +55,10 @@ export function getPerformanceStats(): PerfStats {
 
   const bucket = (c: number | null) => (c == null ? "unknown" : c >= 0.8 ? "80-100%" : c >= 0.65 ? "65-80%" : "<65%");
 
-  const cand = db
+  const cand = await db
     .select({ r: candidates.overnightReturnPct, picked: candidates.picked })
     .from(candidates)
-    .where(isNotNull(candidates.overnightReturnPct))
-    .all();
+    .where(isNotNull(candidates.overnightReturnPct));
 
   return {
     closedTrades: rows.length,
@@ -83,8 +81,8 @@ function omitKey<T extends { key: string }>(g: T) {
 }
 
 /** Newest active lessons first. With few lessons we include all; the meta-review job keeps the set small. */
-export function getActiveLessons(limit = 25) {
-  return getDb().select().from(lessons).where(eq(lessons.active, true)).orderBy(desc(lessons.createdAt)).limit(limit).all();
+export async function getActiveLessons(limit = 25) {
+  return getDb().select().from(lessons).where(eq(lessons.active, true)).orderBy(desc(lessons.createdAt)).limit(limit);
 }
 
 export function formatMemoryForPrompt(stats: PerfStats, ls: { text: string; tags: string[] }[]): string {

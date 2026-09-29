@@ -160,8 +160,8 @@ export class T212Client {
     this.auth = "Basic " + Buffer.from(`${key}:${secret}`, "utf8").toString("base64");
   }
 
-  static fromEnv(): T212Client {
-    const c = getEnvConfig();
+  static async fromEnv(): Promise<T212Client> {
+    const c = await getEnvConfig();
     if (!c.t212Key || !c.t212Secret) throw new Error("Trading 212 API key/secret not set (add them in Settings)");
     return new T212Client(c.t212Env, c.t212Key, c.t212Secret);
   }

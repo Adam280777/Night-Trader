@@ -14,26 +14,26 @@ export async function checkDecisionGuardrails(
   account?: AccountState,
 ): Promise<{ result: GuardrailResult; account: AccountState; instrument: { type: string; name: string; currencyCode: string } | null }> {
   const db = getDb();
-  const d = db.select().from(schema.decisions).where(eq(schema.decisions.id, decisionId)).get();
+  const d = await db.select().from(schema.decisions).where(eq(schema.decisions.id, decisionId)).get();
   if (!d || d.action !== "BUY" || !d.ticker) throw new Error(`Decision ${decisionId} is not a BUY`);
-  const run = db.select().from(schema.runs).where(eq(schema.runs.id, d.runId)).get()!;
+  const run = (await db.select().from(schema.runs).where(eq(schema.runs.id, d.runId)).get())!;
 
-  const client = tryClient();
+  const client = await tryClient();
   const acct = account ?? (await getAccountState(client));
   const inst = client ? (await getInstrumentsCached(client)).find((i) => i.ticker === d.ticker) : undefined;
   const market = inst ? marketOf(inst) ?? run.market : run.market;
 
   const result = evaluateGuardrails({
-    settings: getSettings(),
+    settings: await getSettings(),
     market,
     ai: { confidence: d.confidence ?? 0, investPct: d.investPct ?? 0, expectedMovePct: d.expectedMovePct ?? 0 },
     instrument: { type: inst?.type ?? "STOCK", name: inst?.name ?? d.name ?? "" },
     account: { totalValue: acct.totalValue, availableCash: acct.availableCash },
-    pnl: pnlWindows(acct.totalValue),
-    hasOpenPosition: !!openTrade(),
+    pnl: await pnlWindows(acct.totalValue),
+    hasOpenPosition: !!await openTrade(),
     minutesToClose,
   });
-  if (anyUnknownOrders()) {
+  if (await anyUnknownOrders()) {
     result.allowed = false;
     result.investValue = 0;
     result.reasons.push("An earlier order has an unknown outcome; resolve it manually before trading.");

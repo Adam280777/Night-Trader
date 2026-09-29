@@ -22,10 +22,11 @@ afterAll(() => {
 });
 
 async function setup() {
-  const { getDb, schema } = await import("../db");
+  const { getDb, schema, ensureMigrated } = await import("../db");
   const { submitMarketOrder } = await import("./safeOrder");
+  await ensureMigrated();
   const db = getDb();
-  const run = db.insert(schema.runs).values({ tradingDate: "2026-01-02", market: "US", mode: "demo", status: "executing" }).returning({ id: schema.runs.id }).get();
+  const [run] = await db.insert(schema.runs).values({ tradingDate: "2026-01-02", market: "US", mode: "demo", status: "executing" }).returning({ id: schema.runs.id });
   return { db, schema, submitMarketOrder, runId: run.id };
 }
 
@@ -47,7 +48,7 @@ describe("submitMarketOrder", () => {
     expect(r.status).toBe("sent");
     expect(place).toHaveBeenCalledTimes(1);
     expect(place).toHaveBeenCalledWith("AAPL_US_EQ", 2, false);
-    expect(db.select().from(schema.orders).where(eq(schema.orders.id, r.orderRowId)).get()?.t212OrderId).toBe("111");
+    expect((await db.select().from(schema.orders).where(eq(schema.orders.id, r.orderRowId)).get())?.t212OrderId).toBe("111");
   });
 
   it("sends a negative quantity for SELL", async () => {
@@ -74,7 +75,7 @@ describe("submitMarketOrder", () => {
     expect(place).toHaveBeenCalledTimes(1);
     expect(r.status).toBe("sent");
     expect(r.t212OrderId).toBe(222);
-    expect(db.select().from(schema.orders).where(eq(schema.orders.id, r.orderRowId)).get()?.status).toBe("sent");
+    expect((await db.select().from(schema.orders).where(eq(schema.orders.id, r.orderRowId)).get())?.status).toBe("sent");
   });
 
   it("on timeout with nothing found, marks the order unknown, blocks trading, and still does not re-send", async () => {
@@ -91,8 +92,8 @@ describe("submitMarketOrder", () => {
     vi.useRealTimers();
     expect(place).toHaveBeenCalledTimes(1);
     expect(r.status).toBe("unknown");
-    expect(db.select().from(schema.orders).where(eq(schema.orders.id, r.orderRowId)).get()?.status).toBe("unknown");
-    expect(anyUnknownOrders()).toBe(true);
+    expect((await db.select().from(schema.orders).where(eq(schema.orders.id, r.orderRowId)).get())?.status).toBe("unknown");
+    expect(await anyUnknownOrders()).toBe(true);
   });
 
   it("a definite API rejection is recorded as rejected", async () => {
@@ -104,6 +105,6 @@ describe("submitMarketOrder", () => {
     });
     const r = await submitMarketOrder({ client, side: "BUY", ticker: "TSLA_US_EQ", quantity: 1, runId, decisionId: null });
     expect(r.status).toBe("rejected");
-    expect(db.select().from(schema.orders).where(eq(schema.orders.id, r.orderRowId)).get()?.status).toBe("rejected");
+    expect((await db.select().from(schema.orders).where(eq(schema.orders.id, r.orderRowId)).get())?.status).toBe("rejected");
   });
 });

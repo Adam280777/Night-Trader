@@ -1,33 +1,28 @@
-import fs from "node:fs";
-import path from "node:path";
+import { eq } from "drizzle-orm";
+import { getDb, schema } from "../db";
 import { T212Client, type Exchange, type TradableInstrument } from "./client";
 
-const dir = () => path.resolve("./data/cache");
-
 async function cached<T>(name: string, ttlMs: number, fetcher: () => Promise<T>): Promise<T> {
-  const file = path.join(dir(), `${name}.json`);
-  try {
-    const stat = fs.statSync(file);
-    if (Date.now() - stat.mtimeMs < ttlMs) return JSON.parse(fs.readFileSync(file, "utf8")) as T;
-  } catch {
-    /* miss */
-  }
+  const db = getDb();
+  const [row] = await db.select().from(schema.kv).where(eq(schema.kv.key, name));
+  if (row && Date.now() - row.updatedAt < ttlMs) return JSON.parse(row.value) as T;
   try {
     const fresh = await fetcher();
-    fs.mkdirSync(dir(), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(fresh));
+    const value = JSON.stringify(fresh);
+    await db.insert(schema.kv).values({ key: name, value, updatedAt: Date.now() }).onConflictDoUpdate({ target: schema.kv.key, set: { value, updatedAt: Date.now() } });
     return fresh;
   } catch (err) {
     // Rate limited or offline: a stale copy is better than nothing.
-    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+    if (row) return JSON.parse(row.value) as T;
     throw err;
   }
 }
 
 const HOUR = 3_600_000;
 
+/** Only US and UK stocks are ever traded, so only those are stored. */
 export const getInstrumentsCached = (c: T212Client) =>
-  cached<TradableInstrument[]>(`instruments-${c.env}`, 12 * HOUR, () => c.getInstruments());
+  cached<TradableInstrument[]>(`instruments-${c.env}`, 12 * HOUR, async () => (await c.getInstruments()).filter((i) => marketOf(i) !== null));
 
 export const getExchangesCached = (c: T212Client) =>
   cached<Exchange[]>(`exchanges-${c.env}`, 1 * HOUR, () => c.getExchanges());

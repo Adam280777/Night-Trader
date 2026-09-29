@@ -11,6 +11,7 @@ function masterKey(): Buffer {
     cached = crypto.createHash("sha256").update(process.env.SECRETS_KEY).digest();
     return cached;
   }
+  if (process.env.VERCEL || process.env.TURSO_DATABASE_URL) throw new Error("SECRETS_KEY is not set. It is required whenever the app uses a hosted database.");
   const dbFile = path.resolve(/*turbopackIgnore: true*/ process.env.DATABASE_PATH ?? "./data/trader.db");
   const keyFile = path.join(path.dirname(dbFile), ".secret-key");
   if (fs.existsSync(keyFile)) {

@@ -18,7 +18,7 @@ type Research = {
 
 export default async function RunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const d = getRunDetail(Number(id));
+  const d = await getRunDetail(Number(id));
   if (!d) notFound();
   const { run, decision, trade, candidates, orders, events, lessons } = d;
   const st = STATUS[run.status];

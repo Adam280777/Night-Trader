@@ -16,8 +16,8 @@ const BUDGET_BUFFER = { US: 0.99, UK: 0.97 } as const;
 
 export async function executeBuy(runId: number): Promise<void> {
   const db = getDb();
-  const run = db.select().from(runs).where(eq(runs.id, runId)).get();
-  const d = db.select().from(decisions).where(eq(decisions.runId, runId)).orderBy(desc(decisions.id)).get();
+  const run = await db.select().from(runs).where(eq(runs.id, runId)).get();
+  const d = await db.select().from(decisions).where(eq(decisions.runId, runId)).orderBy(desc(decisions.id)).get();
   if (!run || !d || d.action !== "BUY" || !d.ticker) return;
 
   const minutesToClose = ((run.sessionCloseAt?.getTime() ?? 0) - Date.now()) / 60_000;
@@ -30,14 +30,14 @@ export async function executeBuy(runId: number): Promise<void> {
 
     const { result, account, instrument } = await checkDecisionGuardrails(d.id, minutesToClose);
     if (!result.allowed) {
-      db.update(decisions).set({ guardrailNotes: [...result.notes, ...result.reasons.map((r) => `BLOCKED: ${r}`)] }).where(eq(decisions.id, d.id)).run();
-      log("warn", "execute", `Blocked at execution: ${result.reasons.join(" ")}`, runId);
+      await db.update(decisions).set({ guardrailNotes: [...result.notes, ...result.reasons.map((r) => `BLOCKED: ${r}`)] }).where(eq(decisions.id, d.id)).run();
+      await log("warn", "execute", `Blocked at execution: ${result.reasons.join(" ")}`, runId);
       setRunStatus(runId, "blocked", result.reasons.join(" "));
       return;
     }
     if (!instrument) throw new Error(`Instrument ${d.ticker} not found`);
 
-    const cand = db.select().from(candidates).where(eq(candidates.runId, runId)).all().find((c) => c.ticker === d.ticker);
+    const cand = (await db.select().from(candidates).where(eq(candidates.runId, runId)).all()).find((c) => c.ticker === d.ticker);
     const yahoo = (cand?.signals as Record<string, string> | null)?.yahoo;
     if (!yahoo) throw new Error("Missing Yahoo symbol for candidate");
     const quote = (await getQuotes([yahoo])).get(yahoo);
@@ -51,13 +51,13 @@ export async function executeBuy(runId: number): Promise<void> {
       setRunStatus(runId, "blocked", `Budget ${budget.toFixed(2)} ${account.currency} is below the price of one share fraction (${unit.toFixed(2)}).`);
       return;
     }
-    log("info", "execute", `${run.mode.toUpperCase()} BUY ${qty} ${d.ticker} @ ~${quote.price} ${instrument.currencyCode} (budget ${budget.toFixed(2)} ${account.currency})`, runId);
+    await log("info", "execute", `${run.mode.toUpperCase()} BUY ${qty} ${d.ticker} @ ~${quote.price} ${instrument.currencyCode} (budget ${budget.toFixed(2)} ${account.currency})`, runId);
 
     let entryPrice = quote.price;
     let filledQty = qty;
 
     if (run.mode !== "dry") {
-      const client = tryClient();
+      const client = await tryClient();
       if (!client) throw new Error("No T212 client");
       const sub = await submitMarketOrder({ client, side: "BUY", ticker: d.ticker, quantity: qty, runId, decisionId: d.id });
       if (sub.status !== "sent" || !sub.t212OrderId) {
@@ -75,25 +75,25 @@ export async function executeBuy(runId: number): Promise<void> {
         }
         filledQty = done?.filledQuantity ?? 0;
         if (filledQty <= 0) {
-          db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, sub.orderRowId)).run();
+          await db.update(orders).set({ status: "cancelled" }).where(eq(orders.id, sub.orderRowId)).run();
           setRunStatus(runId, "failed", `Buy order not filled (status ${done?.status ?? "unknown"}); cancelled.`);
           return;
         }
       } else {
         filledQty = done.filledQuantity ?? qty;
       }
-      db.update(orders).set({ status: "filled", filledQuantity: filledQty }).where(eq(orders.id, sub.orderRowId)).run();
+      await db.update(orders).set({ status: "filled", filledQuantity: filledQty }).where(eq(orders.id, sub.orderRowId)).run();
       const pos = (await client.getPositions(d.ticker)).find((p) => p.instrument.ticker === d.ticker);
       if (pos) entryPrice = pos.averagePricePaid;
     }
 
-    db.insert(trades)
+    await db.insert(trades)
       .values({ runId, decisionId: d.id, ticker: d.ticker, name: d.name, quantity: filledQty, entryPrice, entryAt: new Date(), status: "open" })
       .run();
     setRunStatus(runId, "holding");
-    log("info", "execute", `Position open: ${filledQty} ${d.ticker} @ ${entryPrice}`, runId);
+    await log("info", "execute", `Position open: ${filledQty} ${d.ticker} @ ${entryPrice}`, runId);
   } catch (err) {
-    log("error", "execute", `Execution failed: ${String(err)}`, runId);
+    await log("error", "execute", `Execution failed: ${String(err)}`, runId);
     setRunStatus(runId, "failed", String(err).slice(0, 500));
   }
 }

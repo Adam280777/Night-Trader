@@ -4,8 +4,8 @@ import type { z } from "zod";
 import { getEnvConfig } from "../config";
 
 let client: { key: string; api: OpenAI } | null = null;
-function openai() {
-  const { openaiKey } = getEnvConfig();
+async function openai() {
+  const { openaiKey } = await getEnvConfig();
   if (!openaiKey) throw new Error("OpenAI API key not set (add it in Settings)");
   if (client?.key !== openaiKey) client = { key: openaiKey, api: new OpenAI({ apiKey: openaiKey, timeout: 15 * 60_000, maxRetries: 2 }) };
   return client.api;
@@ -27,10 +27,10 @@ export interface StructuredResult<T> {
 
 /** One Responses API call returning a zod-validated object, optionally with live web search. */
 export async function structured<S extends z.ZodType>(schema: S, o: StructuredOpts): Promise<StructuredResult<z.infer<S>>> {
-  const { openaiModel } = getEnvConfig();
+  const { openaiModel } = await getEnvConfig();
   const reasoning = /^(gpt-5|o\d)/.test(openaiModel) ? { effort: o.effort ?? "medium" } : undefined;
 
-  const res = await openai().responses.parse({
+  const res = await (await openai()).responses.parse({
     model: openaiModel,
     instructions: o.instructions,
     input: o.input,
@@ -60,8 +60,8 @@ export async function structured<S extends z.ZodType>(schema: S, o: StructuredOp
 
 /** Plain streaming-free text answer, used by the chat panel. */
 export async function chatText(instructions: string, input: string): Promise<string> {
-  const { openaiModel } = getEnvConfig();
-  const res = await openai().responses.create({
+  const { openaiModel } = await getEnvConfig();
+  const res = await (await openai()).responses.create({
     model: openaiModel,
     instructions,
     input,

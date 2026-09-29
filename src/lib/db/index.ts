@@ -1,27 +1,37 @@
-import Database from "better-sqlite3";
-import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { createClient } from "@libsql/client";
+import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
+import { migrate } from "drizzle-orm/libsql/migrator";
 import fs from "node:fs";
 import path from "node:path";
 import * as schema from "./schema";
 
-export type Db = BetterSQLite3Database<typeof schema>;
+export type Db = LibSQLDatabase<typeof schema>;
 
-const g = globalThis as unknown as { __db?: Db };
+const g = globalThis as unknown as { __db?: Db; __migrated?: Promise<void> };
 
-/** Singleton per process; survives Next.js dev hot reloads. */
+/** Turso (hosted) when TURSO_DATABASE_URL is set, otherwise a local SQLite file. */
 export function getDb(): Db {
   if (g.__db) return g.__db;
-  const file = path.resolve(/*turbopackIgnore: true*/ process.env.DATABASE_PATH ?? "./data/trader.db");
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const sqlite = new Database(file);
-  sqlite.pragma("journal_mode = WAL"); // web app + worker share the file
-  sqlite.pragma("busy_timeout = 5000");
-  sqlite.pragma("foreign_keys = ON");
-  const db = drizzle(sqlite, { schema });
-  migrate(db, { migrationsFolder: path.resolve(/*turbopackIgnore: true*/ "./drizzle") });
-  g.__db = db;
-  return db;
+  const remote = process.env.TURSO_DATABASE_URL;
+  let client;
+  if (remote) {
+    client = createClient({ url: remote, authToken: process.env.TURSO_AUTH_TOKEN });
+  } else {
+    if (process.env.VERCEL) throw new Error("TURSO_DATABASE_URL is not set");
+    const file = path.resolve(/*turbopackIgnore: true*/ process.env.DATABASE_PATH ?? "./data/trader.db");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    client = createClient({ url: `file:${file}` });
+  }
+  g.__db = drizzle(client, { schema });
+  return g.__db;
+}
+
+/** Applies pending migrations once per process. */
+export function ensureMigrated(): Promise<void> {
+  return (g.__migrated ??= migrate(getDb(), { migrationsFolder: path.resolve(/*turbopackIgnore: true*/ "./drizzle") }).catch((e) => {
+    g.__migrated = undefined;
+    throw e;
+  }));
 }
 
 export { schema };

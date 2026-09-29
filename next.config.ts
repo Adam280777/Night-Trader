@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["better-sqlite3", "yahoo-finance2"],
+  serverExternalPackages: ["@libsql/client", "yahoo-finance2"],
+  outputFileTracingIncludes: { "/*": ["./drizzle/**/*"] },
 };
 
 export default nextConfig;

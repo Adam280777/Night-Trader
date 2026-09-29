@@ -33,9 +33,9 @@ export async function testOpenAI(key: string, model: string): Promise<TestResult
 }
 
 /** Never includes the secrets themselves, only whether they exist and where they come from. */
-export function connectionStatus() {
-  const e = getEnvConfig();
-  const stored = readConnection();
+export async function connectionStatus() {
+  const e = await getEnvConfig();
+  const stored = await readConnection();
   return {
     t212Env: e.t212Env,
     hasT212Keys: !!(e.t212Key && e.t212Secret),

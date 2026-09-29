@@ -6,13 +6,13 @@ import { getSettingsView } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
-export default function SettingsPage() {
-  const { settings, env } = getSettingsView();
+export default async function SettingsPage() {
+  const { settings, env } = await getSettingsView();
   return (
     <>
       <PageHeader title="Settings" subtitle="Connect your accounts, tune the safety limits and manage access. Changes save instantly." />
       <div className="space-y-6">
-        <ConnectionsForm initial={connectionStatus()} />
+        <ConnectionsForm initial={await connectionStatus()} />
         <SettingsForm settings={settings} t212Env={env.t212Env} hasT212Keys={env.hasT212Keys} hasOpenAI={env.hasOpenAI} />
         <PasswordForm />
       </div>

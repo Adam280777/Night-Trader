@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { eq } from "drizzle-orm";
-import { getDb, schema } from "./db";
+import { ensureMigrated, getDb, schema } from "./db";
 import { signingKey } from "./secrets";
 
 export const SESSION_COOKIE = "ot_session";
@@ -25,49 +25,50 @@ function checkHash(pw: string, stored: string): boolean {
   return crypto.timingSafeEqual(expected, actual);
 }
 
-function readRecord(): AuthRecord | null {
-  const row = getDb().select().from(schema.settings).where(eq(schema.settings.key, "_auth")).get();
+async function readRecord(): Promise<AuthRecord | null> {
+  await ensureMigrated();
+  const [row] = await getDb().select().from(schema.settings).where(eq(schema.settings.key, "_auth"));
   return (row?.value as AuthRecord | undefined) ?? null;
 }
 
-function writeRecord(rec: AuthRecord) {
-  getDb().insert(schema.settings).values({ key: "_auth", value: rec }).onConflictDoUpdate({ target: schema.settings.key, set: { value: rec } }).run();
+async function writeRecord(rec: AuthRecord) {
+  await getDb().insert(schema.settings).values({ key: "_auth", value: rec }).onConflictDoUpdate({ target: schema.settings.key, set: { value: rec } });
 }
 
 /** The stored password hash, seeded once from APP_PASSWORD. No password anywhere = null = nobody can log in. */
-function authRecord(): AuthRecord | null {
-  const existing = readRecord();
+async function authRecord(): Promise<AuthRecord | null> {
+  const existing = await readRecord();
   if (existing) return existing;
   const initial = process.env.APP_PASSWORD;
   if (!initial) return null;
   const rec = { hash: hashPassword(initial), version: 1 };
-  writeRecord(rec);
+  await writeRecord(rec);
   return rec;
 }
 
-export const isConfigured = () => authRecord() !== null;
+export const isConfigured = async () => (await authRecord()) !== null;
 
-export function verifyPassword(pw: string): boolean {
-  const rec = authRecord();
+export async function verifyPassword(pw: string): Promise<boolean> {
+  const rec = await authRecord();
   return !!rec && checkHash(pw, rec.hash);
 }
 
 /** Changing the password bumps the version, which invalidates every existing session. */
-export function setPassword(pw: string) {
-  const rec = authRecord();
-  writeRecord({ hash: hashPassword(pw), version: (rec?.version ?? 0) + 1 });
+export async function setPassword(pw: string) {
+  const rec = await authRecord();
+  await writeRecord({ hash: hashPassword(pw), version: (rec?.version ?? 0) + 1 });
 }
 
 const sign = (payload: string) => crypto.createHmac("sha256", signingKey()).update(payload).digest("base64url");
 
-export function createSession(): { token: string; maxAgeSec: number } {
-  const rec = authRecord();
+export async function createSession(): Promise<{ token: string; maxAgeSec: number }> {
+  const rec = await authRecord();
   if (!rec) throw new Error("No password configured");
   const payload = `${rec.version}.${Date.now() + SESSION_TTL_MS}`;
   return { token: `${payload}.${sign(payload)}`, maxAgeSec: SESSION_TTL_MS / 1000 };
 }
 
-export function verifySession(token: string | undefined): boolean {
+export async function verifySession(token: string | undefined): Promise<boolean> {
   if (!token) return false;
   const [version, exp, sig] = token.split(".");
   if (!version || !exp || !sig) return false;
@@ -75,7 +76,7 @@ export function verifySession(token: string | undefined): boolean {
   const given = Buffer.from(sig);
   if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return false;
   if (Number(exp) < Date.now()) return false;
-  return authRecord()?.version === Number(version);
+  return (await authRecord())?.version === Number(version);
 }
 
 // Login throttling: 5 wrong passwords from one address locks it out for a minute.

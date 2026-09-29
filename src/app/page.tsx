@@ -37,18 +37,22 @@ function Timeline({ status }: { status: string }) {
 }
 
 export default async function Dashboard() {
-  const settings = getSettings();
-  const env = getEnvStatus();
-  const worker = getWorkerStatus();
-  const { account, error: acctError } = await getAccountSafe();
-  const featured = getFeaturedRun();
-  const open = getOpenTrade();
-  const unknown = getUnknownOrders();
-  const stats = getPerformanceStats();
-  const events = getRecentEvents(12);
-  const equity = getEquitySeries().map((e) => ({ ts: e.ts.getTime(), value: e.totalValue }));
-  const windows = account ? getPnlWindows(account.totalValue) : null;
-  const mode = currentMode(settings);
+  const settings = await getSettings();
+  const [env, worker, acctRes, featured, open, unknown, stats, events, equityRows, mode] = await Promise.all([
+    getEnvStatus(),
+    getWorkerStatus(),
+    getAccountSafe(),
+    getFeaturedRun(),
+    getOpenTrade(),
+    getUnknownOrders(),
+    getPerformanceStats(),
+    getRecentEvents(12),
+    getEquitySeries(),
+    currentMode(settings),
+  ]);
+  const { account, error: acctError } = acctRes;
+  const equity = equityRows.map((e) => ({ ts: e.ts.getTime(), value: e.totalValue }));
+  const windows = account ? await getPnlWindows(account.totalValue) : null;
   const ccy = account?.currency ?? "GBP";
 
   const run = featured?.run;
@@ -64,14 +68,14 @@ export default async function Dashboard() {
         right={
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone={mode === "dry" ? "info" : mode === "demo" ? "warn" : "bad"}>{mode === "dry" ? "Dry run (no orders)" : mode === "demo" ? "Demo account" : "LIVE money"}</Badge>
-            <Badge tone={worker.alive ? "good" : "bad"}>{worker.alive ? "Worker running" : "Worker offline"}</Badge>
+            <Badge tone={worker.alive ? "good" : "bad"}>{worker.alive ? "Scheduler online" : "Scheduler offline"}</Badge>
             <KillSwitch on={settings.killSwitch} />
           </div>
         }
       />
 
       <div className="mb-6 space-y-3 empty:hidden">
-        {!worker.alive && <Notice tone="bad">The worker is not running, so nothing will be researched, bought or sold. Start it with <code className="font-mono">npm run worker</code> (or <code className="font-mono">npm run start:all</code>).</Notice>}
+        {!worker.alive && <Notice tone="bad">The cloud scheduler has not checked in for a few minutes, so nothing will be researched, bought or sold. Check that the external timer (cron-job.org or GitHub Actions) is calling <code className="font-mono">/api/cron/tick</code> every minute.</Notice>}
         {!env.hasOpenAI && <Notice tone="bad">No OpenAI API key is set (add it in Settings), so the AI cannot research or decide.</Notice>}
         {!env.hasT212Keys && <Notice tone="warn">Trading 212 keys are missing (add them in Settings). The stock universe and market schedule come from Trading 212, so the AI cannot run yet.</Notice>}
         {acctError && <Notice tone="warn">Could not read your Trading 212 account: {acctError}</Notice>}

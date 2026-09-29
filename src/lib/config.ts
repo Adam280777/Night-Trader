@@ -29,22 +29,19 @@ export const SettingsSchema = z.object({
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
-export function getSettings(): Settings {
+export async function getSettings(): Promise<Settings> {
   const db = getDb();
-  const rows = db.select().from(schema.settings).all();
+  const rows = await db.select().from(schema.settings);
   const obj: Record<string, unknown> = {};
   for (const r of rows) obj[r.key] = r.value;
   return SettingsSchema.parse(obj);
 }
 
-export function updateSettings(patch: Partial<Settings>): Settings {
+export async function updateSettings(patch: Partial<Settings>): Promise<Settings> {
   const db = getDb();
-  const next = SettingsSchema.parse({ ...getSettings(), ...patch });
+  const next = SettingsSchema.parse({ ...(await getSettings()), ...patch });
   for (const [key, value] of Object.entries(next)) {
-    db.insert(schema.settings)
-      .values({ key, value })
-      .onConflictDoUpdate({ target: schema.settings.key, set: { value } })
-      .run();
+    await db.insert(schema.settings).values({ key, value }).onConflictDoUpdate({ target: schema.settings.key, set: { value } });
   }
   return next;
 }
@@ -57,25 +54,25 @@ interface StoredConn {
   openaiKey?: string;
 }
 
-export function readConnection(): StoredConn {
-  const row = getDb().select().from(schema.settings).where(eq(schema.settings.key, "_conn")).get();
+export async function readConnection(): Promise<StoredConn> {
+  const [row] = await getDb().select().from(schema.settings).where(eq(schema.settings.key, "_conn"));
   return (row?.value as StoredConn | undefined) ?? {};
 }
 
-export function writeConnection(patch: { t212Env?: "demo" | "live"; openaiModel?: string; t212Key?: string; t212Secret?: string; openaiKey?: string }) {
-  const cur = readConnection();
+export async function writeConnection(patch: { t212Env?: "demo" | "live"; openaiModel?: string; t212Key?: string; t212Secret?: string; openaiKey?: string }) {
+  const cur = await readConnection();
   const next: StoredConn = { ...cur };
   if (patch.t212Env) next.t212Env = patch.t212Env;
   if (patch.openaiModel) next.openaiModel = patch.openaiModel;
   if (patch.t212Key) next.t212Key = encrypt(patch.t212Key);
   if (patch.t212Secret) next.t212Secret = encrypt(patch.t212Secret);
   if (patch.openaiKey) next.openaiKey = encrypt(patch.openaiKey);
-  getDb().insert(schema.settings).values({ key: "_conn", value: next }).onConflictDoUpdate({ target: schema.settings.key, set: { value: next } }).run();
+  await getDb().insert(schema.settings).values({ key: "_conn", value: next }).onConflictDoUpdate({ target: schema.settings.key, set: { value: next } });
 }
 
 /** Keys saved in Settings win over environment variables. */
-export function getEnvConfig() {
-  const c = readConnection();
+export async function getEnvConfig() {
+  const c = await readConnection();
   const dec = (v: string | undefined) => (v ? decrypt(v) : null);
   const envName = c.t212Env ?? (process.env.T212_ENV === "live" ? "live" : "demo");
   return {
@@ -88,9 +85,10 @@ export function getEnvConfig() {
 }
 
 /** Run mode is frozen at run creation so a settings change mid-run can never upgrade a dry run to real orders. */
-export function currentMode(s: Settings = getSettings()): "dry" | "demo" | "live" {
+export async function currentMode(s?: Settings): Promise<"dry" | "demo" | "live"> {
+  s ??= await getSettings();
   if (!s.tradingEnabled) return "dry";
-  const env = getEnvConfig().t212Env;
+  const env = (await getEnvConfig()).t212Env;
   if (env === "live" && !s.liveConfirmed) return "dry";
   return env;
 }

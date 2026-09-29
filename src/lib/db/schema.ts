@@ -176,3 +176,16 @@ export const chatMessages = sqliteTable("chat_messages", {
   content: text("content").notNull(),
   createdAt: createdAt(),
 });
+
+/** Short leases so overlapping cron invocations never run the same step twice. */
+export const locks = sqliteTable("locks", {
+  name: text("name").primaryKey(),
+  until: integer("until").notNull(),
+});
+
+/** Small server-side cache (broker instrument list, exchange schedules). */
+export const kv = sqliteTable("kv", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
