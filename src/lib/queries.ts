@@ -21,7 +21,7 @@ export async function getWorkerStatus() {
 
 export async function getEnvStatus() {
   const e = await getEnvConfig();
-  return { t212Env: e.t212Env, hasT212Keys: !!(e.t212Key && e.t212Secret), hasOpenAI: !!e.openaiKey, model: e.openaiModel };
+  return { t212Env: e.t212Env, hasT212Keys: !!(e.t212Key && e.t212Secret), hasAI: !!e.ai.key, aiProvider: e.ai.provider, model: e.ai.model };
 }
 
 export async function getAccountSafe(): Promise<{ account: AccountState | null; error?: string }> {

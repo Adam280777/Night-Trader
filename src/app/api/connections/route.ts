@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getEnvConfig, updateSettings, writeConnection } from "@/lib/config";
-import { connectionStatus, testOpenAI, testT212 } from "@/lib/connections";
+import { connectionStatus, testAI, testT212 } from "@/lib/connections";
 import { openTrade } from "@/lib/account";
+import { PROVIDER_IDS } from "@/lib/ai/providers";
 
 export const dynamic = "force-dynamic";
 
@@ -10,8 +11,9 @@ const Body = z.object({
   t212Env: z.enum(["demo", "live"]).optional(),
   t212Key: z.string().trim().max(500).optional(),
   t212Secret: z.string().trim().max(500).optional(),
-  openaiKey: z.string().trim().max(500).optional(),
-  openaiModel: z.string().trim().max(100).optional(),
+  aiProvider: z.enum(PROVIDER_IDS).optional(),
+  aiKey: z.string().trim().max(500).optional(),
+  aiModel: z.string().trim().max(100).optional(),
 });
 
 export async function GET() {
@@ -36,11 +38,14 @@ export async function PUT(req: Request) {
     if (r.ok) Object.assign(save, { t212Env: env, t212Key: b.t212Key, t212Secret: b.t212Secret });
   }
 
-  const openaiChanged = b.openaiKey || (b.openaiModel && b.openaiModel !== cur.openaiModel);
-  if (openaiChanged) {
-    const r = await testOpenAI(b.openaiKey || cur.openaiKey, b.openaiModel || cur.openaiModel);
-    results.openai = r;
-    if (r.ok) Object.assign(save, { openaiKey: b.openaiKey, openaiModel: b.openaiModel });
+  const provider = b.aiProvider ?? cur.aiProvider;
+  const curP = cur.providers[provider];
+  const aiChanged = b.aiKey || provider !== cur.aiProvider || (b.aiModel && b.aiModel !== curP.model);
+  if (aiChanged) {
+    const model = b.aiModel || curP.model;
+    const r = await testAI(provider, b.aiKey || curP.key, model);
+    results.ai = r;
+    if (r.ok) Object.assign(save, { aiProvider: provider, ai: { provider, key: b.aiKey, model } });
   }
 
   if (Object.keys(save).length > 0) {
@@ -54,6 +59,6 @@ export async function PUT(req: Request) {
 /** Tests the currently saved keys without changing anything. */
 export async function POST() {
   const c = await getEnvConfig();
-  const [t212, openai] = await Promise.all([testT212(c.t212Env, c.t212Key, c.t212Secret), testOpenAI(c.openaiKey, c.openaiModel)]);
-  return NextResponse.json({ results: { t212, openai }, status: await connectionStatus() });
+  const [t212, ai] = await Promise.all([testT212(c.t212Env, c.t212Key, c.t212Secret), testAI(c.ai.provider, c.ai.key, c.ai.model)]);
+  return NextResponse.json({ results: { t212, ai }, status: await connectionStatus() });
 }

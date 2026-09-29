@@ -2,6 +2,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import { decrypt, encrypt } from "./secrets";
+import { PROVIDERS, PROVIDER_IDS, isProvider, type Provider } from "./ai/providers";
 
 /** User-tunable settings, persisted in SQLite. Hard limits live here but are enforced in lib/risk. */
 export const SettingsSchema = z.object({
@@ -48,10 +49,10 @@ export async function updateSettings(patch: Partial<Settings>): Promise<Settings
 
 interface StoredConn {
   t212Env?: "demo" | "live";
-  openaiModel?: string;
   t212Key?: string;
   t212Secret?: string;
-  openaiKey?: string;
+  aiProvider?: Provider;
+  ai?: Partial<Record<Provider, { key?: string; model?: string }>>;
 }
 
 export async function readConnection(): Promise<StoredConn> {
@@ -59,15 +60,33 @@ export async function readConnection(): Promise<StoredConn> {
   return (row?.value as StoredConn | undefined) ?? {};
 }
 
-export async function writeConnection(patch: { t212Env?: "demo" | "live"; openaiModel?: string; t212Key?: string; t212Secret?: string; openaiKey?: string }) {
+export interface ConnectionPatch {
+  t212Env?: "demo" | "live";
+  t212Key?: string;
+  t212Secret?: string;
+  aiProvider?: Provider;
+  /** Key/model for one provider (encrypted before storing). */
+  ai?: { provider: Provider; key?: string; model?: string };
+}
+
+export async function writeConnection(patch: ConnectionPatch) {
   const cur = await readConnection();
   const next: StoredConn = { ...cur };
   if (patch.t212Env) next.t212Env = patch.t212Env;
-  if (patch.openaiModel) next.openaiModel = patch.openaiModel;
   if (patch.t212Key) next.t212Key = encrypt(patch.t212Key);
   if (patch.t212Secret) next.t212Secret = encrypt(patch.t212Secret);
-  if (patch.openaiKey) next.openaiKey = encrypt(patch.openaiKey);
+  if (patch.aiProvider) next.aiProvider = patch.aiProvider;
+  if (patch.ai) {
+    const p = next.ai?.[patch.ai.provider] ?? {};
+    next.ai = { ...next.ai, [patch.ai.provider]: { key: patch.ai.key ? encrypt(patch.ai.key) : p.key, model: patch.ai.model || p.model } };
+  }
   await getDb().insert(schema.settings).values({ key: "_conn", value: next }).onConflictDoUpdate({ target: schema.settings.key, set: { value: next } });
+}
+
+export interface ProviderConfig {
+  key: string;
+  model: string;
+  source: "settings" | "environment" | null;
 }
 
 /** Keys saved in Settings win over environment variables. */
@@ -75,12 +94,30 @@ export async function getEnvConfig() {
   const c = await readConnection();
   const dec = (v: string | undefined) => (v ? decrypt(v) : null);
   const envName = c.t212Env ?? (process.env.T212_ENV === "live" ? "live" : "demo");
+
+  const providers = {} as Record<Provider, ProviderConfig>;
+  for (const id of PROVIDER_IDS) {
+    const info = PROVIDERS[id];
+    const stored = dec(c.ai?.[id]?.key);
+    const fromEnv = process.env[info.envKey] ?? "";
+    providers[id] = {
+      key: stored ?? fromEnv,
+      model: c.ai?.[id]?.model ?? process.env[`${info.envKey.replace("_API_KEY", "_MODEL")}`] ?? info.defaultModel,
+      source: stored ? "settings" : fromEnv ? "environment" : null,
+    };
+  }
+  const envProvider = process.env.AI_PROVIDER;
+  const provider: Provider =
+    c.aiProvider ?? (isProvider(envProvider) ? envProvider : PROVIDER_IDS.find((id) => providers[id].key) ?? "openai");
+
   return {
     t212Env: envName as "demo" | "live",
     t212Key: dec(c.t212Key) ?? process.env.T212_API_KEY ?? "",
     t212Secret: dec(c.t212Secret) ?? process.env.T212_API_SECRET ?? "",
-    openaiKey: dec(c.openaiKey) ?? process.env.OPENAI_API_KEY ?? "",
-    openaiModel: c.openaiModel ?? process.env.OPENAI_MODEL ?? "gpt-5.5",
+    aiProvider: provider,
+    providers,
+    /** The active provider's settings. */
+    ai: { provider, ...providers[provider] },
   };
 }
 

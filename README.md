@@ -1,6 +1,6 @@
 # AI Overnight Trader
 
-A dashboard where an OpenAI-powered agent researches the market, buys **one** stock shortly before the close and
+A dashboard where an AI agent (OpenAI, Google Gemini or Anthropic Claude, chosen in Settings) researches the market, buys **one** stock shortly before the close and
 sells it at the next open, every trading day, then learns from its own results. Connects to Trading 212
 (demo or live), US and UK markets, with hard guardrails the AI cannot override. Runs fully in the cloud, so your PC
 can be off.
@@ -18,7 +18,7 @@ can be off.
 2. Create a Turso database (`turso db create trader`, then `turso db show trader --url` and `turso db tokens create trader`).
 3. Import the repo in Vercel and set the environment variables from `.env.example`
    (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_PASSWORD`, `SECRETS_KEY`, `CRON_SECRET`). The build applies database migrations automatically.
-4. Open the site, sign in, go to **Settings**, paste your Trading 212 and OpenAI keys and press save (each key is tested before it is stored).
+4. Open the site, sign in, go to **Settings**, choose your AI provider, paste its key and your Trading 212 key and press save (each key is tested before it is stored).
 5. Create the timer. Either:
    - **cron-job.org** (recommended, free): a job hitting `https://YOUR-APP.vercel.app/api/cron/tick` every minute with the header
      `Authorization: Bearer <CRON_SECRET>`; or

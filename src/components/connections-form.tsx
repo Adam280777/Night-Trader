@@ -3,16 +3,15 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, XCircle } from "lucide-react";
+import { PROVIDERS, PROVIDER_IDS, type Provider } from "@/lib/ai/providers";
 
 interface Status {
   t212Env: "demo" | "live";
   hasT212Keys: boolean;
   t212Source: string | null;
   t212KeyHint: string | null;
-  hasOpenAI: boolean;
-  openaiSource: string | null;
-  openaiKeyHint: string | null;
-  openaiModel: string;
+  aiProvider: Provider;
+  providers: Record<Provider, { has: boolean; source: string | null; keyHint: string | null; model: string }>;
 }
 type Result = { ok: boolean; detail: string };
 
@@ -34,8 +33,9 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
   const [env, setEnv] = useState(initial.t212Env);
   const [key, setKey] = useState("");
   const [secret, setSecret] = useState("");
-  const [oaKey, setOaKey] = useState("");
-  const [model, setModel] = useState(initial.openaiModel);
+  const [provider, setProvider] = useState<Provider>(initial.aiProvider);
+  const [aiKey, setAiKey] = useState("");
+  const [model, setModel] = useState(initial.providers[initial.aiProvider].model);
   const [res, setRes] = useState<Record<string, Result>>({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -52,7 +52,7 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
       if (Object.values(j.results as Record<string, Result>).some((x) => x.ok)) {
         setKey("");
         setSecret("");
-        setOaKey("");
+        setAiKey("");
       }
       router.refresh();
     } catch {
@@ -62,7 +62,14 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
     }
   }
 
-  const changed = !!(key || secret || oaKey || env !== st.t212Env || model !== st.openaiModel);
+  const info = PROVIDERS[provider];
+  const cur = st.providers[provider];
+  const changed = !!(key || secret || aiKey || env !== st.t212Env || provider !== st.aiProvider || model !== cur.model);
+  function pickProvider(p: Provider) {
+    setProvider(p);
+    setModel(st.providers[p].model);
+    setAiKey("");
+  }
   const source = (s: string | null) => (s === "settings" ? "saved in Settings" : s === "environment" ? "from environment" : "not set");
 
   return (
@@ -85,12 +92,26 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
         </div>
 
         <div>
-          <h3 className="mb-2 text-sm font-medium">OpenAI <span className="text-xs font-normal text-muted">· {st.hasOpenAI ? `${st.openaiKeyHint} (${source(st.openaiSource)})` : "not set"}</span></h3>
+          <h3 className="mb-2 text-sm font-medium">AI provider <span className="text-xs font-normal text-muted">· {cur.has ? `${cur.keyHint} (${source(cur.source)})` : "no key yet"}</span></h3>
           <div className="space-y-2">
-            <input type="password" autoComplete="off" value={oaKey} onChange={(e) => setOaKey(e.target.value)} placeholder="API key (sk-…)" className={input} />
-            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model" className={input} aria-label="Model" />
+            <select value={provider} onChange={(e) => pickProvider(e.target.value as Provider)} className={input} aria-label="AI provider">
+              {PROVIDER_IDS.map((id) => (
+                <option key={id} value={id}>
+                  {PROVIDERS[id].label}
+                  {st.providers[id].has ? " (key saved)" : ""}
+                </option>
+              ))}
+            </select>
+            <input type="password" autoComplete="off" value={aiKey} onChange={(e) => setAiKey(e.target.value)} placeholder={info.keyPlaceholder} className={input} />
+            <input value={model} onChange={(e) => setModel(e.target.value)} list="ai-models" placeholder="Model" className={input} aria-label="Model" />
+            <datalist id="ai-models">
+              {info.models.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+            <p className="text-xs text-muted">Get a key at {info.keyUrl}. Each provider's key is stored separately, so you can switch back and forth.</p>
           </div>
-          <Verdict r={res.openai} />
+          <Verdict r={res.ai} />
         </div>
       </div>
 
@@ -98,7 +119,7 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
       <div className="mt-4 flex flex-wrap gap-2">
         <button
           disabled={busy || !changed}
-          onClick={() => call("PUT", { t212Env: env, t212Key: key || undefined, t212Secret: secret || undefined, openaiKey: oaKey || undefined, openaiModel: model })}
+          onClick={() => call("PUT", { t212Env: env, t212Key: key || undefined, t212Secret: secret || undefined, aiProvider: provider, aiKey: aiKey || undefined, aiModel: model })}
           className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:text-black"
         >
           {busy ? "Checking…" : "Verify & save"}
