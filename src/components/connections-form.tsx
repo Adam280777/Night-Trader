@@ -69,7 +69,6 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
   const [modelNote, setModelNote] = useState<string | null>(null);
 
   const loadModels = useCallback(async (p: Provider, k: string, current: string) => {
-    setModelNote("Loading models…");
     try {
       const r = await fetch("/api/connections/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: p, key: k || undefined }) });
       const j = await r.json();
@@ -86,15 +85,23 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount
     if (initial.providers[initial.aiProvider].has) void loadModels(initial.aiProvider, "", initial.providers[initial.aiProvider].model);
   }, [initial, loadModels]);
+
+  useEffect(() => {
+    if (aiKey.length < 20) return;
+    const t = setTimeout(() => void loadModels(provider, aiKey, model), 600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiKey, provider, loadModels]);
 
   function pickProvider(p: Provider) {
     setProvider(p);
     setModel(st.providers[p].model);
     setAiKey("");
     setLive([]);
-    setModelNote(null);
+    setModelNote(st.providers[p].has ? null : "Paste your key and the available models will load here.");
     if (st.providers[p].has) void loadModels(p, "", st.providers[p].model);
   }
   const source = (s: string | null) => (s === "settings" ? "saved in Settings" : s === "environment" ? "from environment" : "not set");
@@ -129,15 +136,19 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
                 </option>
               ))}
             </select>
-            <input type="password" autoComplete="off" value={aiKey} onChange={(e) => setAiKey(e.target.value)} onBlur={() => aiKey && loadModels(provider, aiKey, model)} placeholder={info.keyPlaceholder} className={input} />
-            <input value={model} onChange={(e) => setModel(e.target.value)} list="ai-models" placeholder="Model" className={input} aria-label="Model" />
-            <datalist id="ai-models">
-              {(live.length ? live : info.models).map((m) => (
-                <option key={m} value={m} />
+            <input type="password" autoComplete="off" value={aiKey} onChange={(e) => setAiKey(e.target.value)} placeholder={info.keyPlaceholder} className={input} />
+            <select value={model} onChange={(e) => setModel(e.target.value)} className={input} aria-label="Model">
+              {[...new Set([model, ...(live.length ? live : info.models)])].map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
               ))}
-            </datalist>
+            </select>
+            <button type="button" onClick={() => loadModels(provider, aiKey, model)} disabled={!aiKey && !cur.has} className="text-xs text-accent underline disabled:opacity-40">
+              Refresh model list
+            </button>
             {modelNote && <p className="text-xs text-muted">{modelNote}</p>}
-            <p className="text-xs text-muted">Get a key at {info.keyUrl}. Each provider's key is stored separately, so you can switch back and forth.</p>
+            <p className="text-xs text-muted">Get a key at {info.keyUrl}. Each provider keeps its own saved key, so you can switch back and forth.</p>
           </div>
           <Verdict r={res.ai} />
         </div>
