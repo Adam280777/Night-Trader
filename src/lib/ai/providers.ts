@@ -10,6 +10,8 @@ export interface ProviderInfo {
   keyPlaceholder: string;
   envKey: string;
   keyUrl: string;
+  /** Picks the default from the live model list when the saved model no longer exists. */
+  preferred: RegExp;
 }
 
 export const PROVIDERS: Record<Provider, ProviderInfo> = {
@@ -17,19 +19,21 @@ export const PROVIDERS: Record<Provider, ProviderInfo> = {
     id: "openai",
     label: "OpenAI",
     defaultModel: "gpt-5.5",
-    models: ["gpt-5.5", "gpt-5", "gpt-5-mini", "gpt-4.1"],
+    models: ["gpt-5.5"],
     keyPlaceholder: "API key (sk-…)",
     envKey: "OPENAI_API_KEY",
     keyUrl: "platform.openai.com/api-keys",
+    preferred: /^gpt-[0-9]+(\.[0-9]+)?$/,
   },
   gemini: {
     id: "gemini",
     label: "Google Gemini",
-    defaultModel: "gemini-2.5-flash",
-    models: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"],
+    defaultModel: "gemini-3.8-flash",
+    models: ["gemini-3.8-flash"],
     keyPlaceholder: "API key (AIza…)",
     envKey: "GEMINI_API_KEY",
     keyUrl: "aistudio.google.com/apikey",
+    preferred: /^gemini-[0-9.]+-flash$/,
   },
   anthropic: {
     id: "anthropic",
@@ -39,6 +43,7 @@ export const PROVIDERS: Record<Provider, ProviderInfo> = {
     keyPlaceholder: "API key (sk-ant-…)",
     envKey: "ANTHROPIC_API_KEY",
     keyUrl: "console.anthropic.com/settings/keys",
+    preferred: /^claude-sonnet-[0-9.-]+$/,
   },
 };
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, XCircle } from "lucide-react";
 import { PROVIDERS, PROVIDER_IDS, type Provider } from "@/lib/ai/providers";
@@ -65,10 +65,37 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
   const info = PROVIDERS[provider];
   const cur = st.providers[provider];
   const changed = !!(key || secret || aiKey || env !== st.t212Env || provider !== st.aiProvider || model !== cur.model);
+  const [live, setLive] = useState<string[]>([]);
+  const [modelNote, setModelNote] = useState<string | null>(null);
+
+  const loadModels = useCallback(async (p: Provider, k: string, current: string) => {
+    setModelNote("Loading models…");
+    try {
+      const r = await fetch("/api/connections/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: p, key: k || undefined }) });
+      const j = await r.json();
+      if (!j.ok) {
+        setLive([]);
+        return setModelNote(j.detail ?? "Could not load models");
+      }
+      setLive(j.models);
+      setModelNote(`${j.models.length} models available for this key.`);
+      if (!j.models.includes(current) && j.suggested) setModel(j.suggested);
+    } catch {
+      setModelNote("Could not load models");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (initial.providers[initial.aiProvider].has) void loadModels(initial.aiProvider, "", initial.providers[initial.aiProvider].model);
+  }, [initial, loadModels]);
+
   function pickProvider(p: Provider) {
     setProvider(p);
     setModel(st.providers[p].model);
     setAiKey("");
+    setLive([]);
+    setModelNote(null);
+    if (st.providers[p].has) void loadModels(p, "", st.providers[p].model);
   }
   const source = (s: string | null) => (s === "settings" ? "saved in Settings" : s === "environment" ? "from environment" : "not set");
 
@@ -102,13 +129,14 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
                 </option>
               ))}
             </select>
-            <input type="password" autoComplete="off" value={aiKey} onChange={(e) => setAiKey(e.target.value)} placeholder={info.keyPlaceholder} className={input} />
+            <input type="password" autoComplete="off" value={aiKey} onChange={(e) => setAiKey(e.target.value)} onBlur={() => aiKey && loadModels(provider, aiKey, model)} placeholder={info.keyPlaceholder} className={input} />
             <input value={model} onChange={(e) => setModel(e.target.value)} list="ai-models" placeholder="Model" className={input} aria-label="Model" />
             <datalist id="ai-models">
-              {info.models.map((m) => (
+              {(live.length ? live : info.models).map((m) => (
                 <option key={m} value={m} />
               ))}
             </datalist>
+            {modelNote && <p className="text-xs text-muted">{modelNote}</p>}
             <p className="text-xs text-muted">Get a key at {info.keyUrl}. Each provider's key is stored separately, so you can switch back and forth.</p>
           </div>
           <Verdict r={res.ai} />
