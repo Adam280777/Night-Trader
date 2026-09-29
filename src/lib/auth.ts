@@ -10,6 +10,7 @@ export const MIN_PASSWORD_LENGTH = 8;
 interface AuthRecord {
   hash: string;
   version: number;
+  custom?: boolean; // set once the password is changed in Settings; from then on APP_PASSWORD is ignored
 }
 
 function hashPassword(pw: string): string {
@@ -35,14 +36,24 @@ async function writeRecord(rec: AuthRecord) {
   await getDb().insert(schema.settings).values({ key: "_auth", value: rec }).onConflictDoUpdate({ target: schema.settings.key, set: { value: rec } });
 }
 
-/** The stored password hash, seeded once from APP_PASSWORD. No password anywhere = null = nobody can log in. */
+let envChecked: string | undefined;
+
+/**
+ * The stored password hash. Until the password is changed in Settings, APP_PASSWORD is the source of truth
+ * (editing it in Vercel and redeploying takes effect). No password anywhere = null = nobody can log in.
+ */
 async function authRecord(): Promise<AuthRecord | null> {
   const existing = await readRecord();
-  if (existing) return existing;
-  const initial = process.env.APP_PASSWORD;
-  if (!initial) return null;
-  const rec = { hash: hashPassword(initial), version: 1 };
+  const env = process.env.APP_PASSWORD?.trim();
+  if (existing?.custom || !env) return existing;
+  if (existing && envChecked === env) return existing;
+  if (existing && checkHash(env, existing.hash)) {
+    envChecked = env;
+    return existing;
+  }
+  const rec = { hash: hashPassword(env), version: (existing?.version ?? 0) + 1 };
   await writeRecord(rec);
+  envChecked = env;
   return rec;
 }
 
@@ -56,7 +67,7 @@ export async function verifyPassword(pw: string): Promise<boolean> {
 /** Changing the password bumps the version, which invalidates every existing session. */
 export async function setPassword(pw: string) {
   const rec = await authRecord();
-  await writeRecord({ hash: hashPassword(pw), version: (rec?.version ?? 0) + 1 });
+  await writeRecord({ hash: hashPassword(pw), version: (rec?.version ?? 0) + 1, custom: true });
 }
 
 const sign = (payload: string) => crypto.createHmac("sha256", signingKey()).update(payload).digest("base64url");
