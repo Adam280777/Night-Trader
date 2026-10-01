@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AlertTriangle, Info, SlidersHorizontal } from "lucide-react";
 import type { Settings } from "@/lib/config";
+import { DATA_RESET_CONFIRMATIONS, type DataResetTarget } from "@/lib/data-reset-config";
 import { DEFAULT_TUNING, TUNING_PARAMS } from "@/lib/quant/tuning";
 import { settingsIssues } from "@/lib/settings-checks";
+import { CollapsibleSection } from "./collapsible-section";
 
 interface Props {
   settings: Settings;
@@ -108,6 +110,152 @@ export function Num({
   );
 }
 
+const RESET_OPTIONS: Record<Exclude<DataResetTarget, "all">, { label: string; detail: string }> = {
+  logs: {
+    label: "Operational logs and diagnostics",
+    detail: "Deletes event logs, job timings and account-value snapshots. Trading and research history stay intact.",
+  },
+  trading: {
+    label: "Trading history",
+    detail: "Deletes runs, decisions, candidates, orders, trades and their lessons. It is blocked while exposure is unresolved and turns on the kill switch.",
+  },
+  research: {
+    label: "Research and learned model",
+    detail: "Deletes the symbol knowledge base, study skips, learned model and generated lessons. Trading records stay intact and the kill switch is turned on.",
+  },
+};
+
+function DataMaintenancePanel({ onComplete }: { onComplete: () => void }) {
+  const [target, setTarget] = useState<Exclude<DataResetTarget, "all">>("logs");
+  const [selectedConfirm, setSelectedConfirm] = useState("");
+  const [allConfirm, setAllConfirm] = useState("");
+  const [busy, setBusy] = useState<DataResetTarget | null>(null);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function submit(resetTarget: DataResetTarget, confirmText: string) {
+    const phrase = DATA_RESET_CONFIRMATIONS[resetTarget];
+    setMessage(null);
+    if (confirmText !== phrase) {
+      setMessage({ ok: false, text: `Type ${phrase} exactly to confirm.` });
+      return;
+    }
+    const label = resetTarget === "all" ? "all generated bot data" : RESET_OPTIONS[resetTarget].label.toLowerCase();
+    if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
+
+    setBusy(resetTarget);
+    try {
+      const response = await fetch("/api/data-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: resetTarget, confirmText }),
+      });
+      const body = (await response.json()) as { deleted?: number; killSwitchEnabled?: boolean; error?: string };
+      if (!response.ok) {
+        setMessage({ ok: false, text: body.error ?? `Reset failed (${response.status}).` });
+        return;
+      }
+      setSelectedConfirm("");
+      setAllConfirm("");
+      setMessage({
+        ok: true,
+        text: `Deleted ${body.deleted ?? 0} stored row(s).${body.killSwitchEnabled ? " The kill switch is now on; review the reset before allowing new trades." : ""}`,
+      });
+      onComplete();
+    } catch (error) {
+      setMessage({ ok: false, text: error instanceof Error ? `Reset failed: ${error.message}` : "Reset failed." });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const selectedPhrase = DATA_RESET_CONFIRMATIONS[target];
+  return (
+    <CollapsibleSection
+      title="Data maintenance"
+      description="Permanently clear selected records or restart all generated bot data. Login, API connections and configuration are preserved."
+      danger
+    >
+      <div className="py-4">
+        <h3 className="text-sm font-semibold">Delete one data area</h3>
+        <p className="mt-1 text-xs text-muted">Choose a category without affecting the other stored history.</p>
+        <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+          <label className="grid gap-1.5 text-sm">
+            Data to delete
+            <select
+              name="reset-target"
+              value={target}
+              onChange={(event) => {
+                setTarget(event.target.value as Exclude<DataResetTarget, "all">);
+                setSelectedConfirm("");
+                setMessage(null);
+              }}
+              className="min-h-10 rounded-lg border border-border bg-bg px-3 text-sm outline-none focus:border-accent"
+            >
+              {Object.entries(RESET_OPTIONS).map(([value, option]) => (
+                <option key={value} value={value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            Type {selectedPhrase}
+            <input
+              name="reset-confirmation"
+              value={selectedConfirm}
+              onChange={(event) => setSelectedConfirm(event.target.value)}
+              aria-describedby="selected-reset-detail"
+              autoComplete="off"
+              className="min-h-10 rounded-lg border border-border bg-bg px-3 font-mono text-sm outline-none focus:border-accent"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => submit(target, selectedConfirm)}
+            disabled={busy !== null}
+            className="min-h-10 rounded-lg border border-danger/60 px-4 text-sm font-semibold text-danger hover:bg-danger/10 disabled:opacity-50"
+          >
+            {busy === target ? "Deleting…" : "Delete selected data"}
+          </button>
+        </div>
+        <p id="selected-reset-detail" className="mt-2 text-xs text-muted">{RESET_OPTIONS[target].detail}</p>
+      </div>
+
+      <div className="border-t border-danger/30 py-4">
+        <h3 className="text-sm font-semibold text-danger">Restart all generated data</h3>
+        <p id="all-reset-detail" className="mt-1 text-xs text-muted">
+          Deletes operational logs, trading history, research, learned models, chat history and cached scheduler state. Login, API credentials and settings are preserved, but the kill switch is turned on.
+        </p>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <label className="grid flex-1 basis-64 gap-1.5 text-sm">
+            Type {DATA_RESET_CONFIRMATIONS.all}
+            <input
+              name="reset-all-confirmation"
+              value={allConfirm}
+              onChange={(event) => setAllConfirm(event.target.value)}
+              aria-describedby="all-reset-detail"
+              autoComplete="off"
+              className="min-h-10 rounded-lg border border-danger/50 bg-bg px-3 font-mono text-sm outline-none focus:border-danger"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => submit("all", allConfirm)}
+            disabled={busy !== null}
+            className="min-h-10 rounded-lg bg-danger px-4 text-sm font-semibold text-white hover:brightness-110 disabled:opacity-50"
+          >
+            {busy === "all" ? "Resetting…" : "Reset all bot data"}
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <p role={message.ok ? "status" : "alert"} className={`pb-4 text-sm ${message.ok ? "text-accent" : "text-danger"}`}>
+          {message.text}
+        </p>
+      )}
+    </CollapsibleSection>
+  );
+}
+
 export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
   const router = useRouter();
   const [s, setS] = useState(settings);
@@ -152,8 +300,11 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
         </section>
       )}
 
-      <section className="rounded-xl border border-border bg-surface p-5">
-        <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Platform trading mode</h2>
+      <CollapsibleSection
+        title="Platform trading mode"
+        description="Account mode, order permissions, approvals and enabled overnight markets."
+        defaultOpen
+      >
         <Row label="Connection" hint="Change these in API connections above.">
           <span className="text-sm">
             Trading 212 <b>{t212Env}</b> · keys {hasT212Keys ? "found" : <b className="text-danger">missing</b>} · every decision is computed locally
@@ -192,13 +343,12 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
         <Row label="Overnight UK market" hint="UK buys pay stamp duty, so a UK candidate has to clear a higher bar before it is worth taking.">
           <Toggle on={s.markets.UK} onChange={(v) => save({ markets: { UK: v } })} label="UK market" />
         </Row>
-      </section>
+      </CollapsibleSection>
 
-      <section className="rounded-xl border border-border bg-surface p-5">
-        <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Intraday momentum strategy</h2>
-        <p className="mb-1 text-xs text-muted">
-          Uses five-minute Yahoo bars and the shared one-minute scheduler. It only buys long, liquid stocks and manages stop, target, trailing and time exits.
-        </p>
+      <CollapsibleSection
+        title="Intraday momentum strategy"
+        description="Five-minute signals, universe discovery, entry rules and managed exits."
+      >
         <Row label="Generate intraday signals" hint="Runs scans and dry simulations. This does not grant order permission.">
           <Toggle on={s.intraday.enabled} onChange={(v) => save({ intraday: { enabled: v } })} label="Intraday signals" />
         </Row>
@@ -265,13 +415,12 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
         <Row label="Minimum confidence"><Num min={50} max={95} step={1} value={asPct(s.intraday.minConfidence)} suffix="%" onCommit={(v) => save({ intraday: { minConfidence: v / 100 } })} /></Row>
         <Row label="Minimum expected edge after costs"><Num min={0} max={5} step={0.05} value={s.intraday.minExpectedEdgePct} suffix="%" onCommit={(v) => save({ intraday: { minExpectedEdgePct: v } })} /></Row>
         <Row label="Maximum quoted spread"><Num min={0.01} max={5} step={0.05} value={s.intraday.maxSpreadPct} suffix="%" onCommit={(v) => save({ intraday: { maxSpreadPct: v } })} /></Row>
-      </section>
+      </CollapsibleSection>
 
-      <section className="rounded-xl border border-border bg-surface p-5">
-        <h2 className="text-sm font-semibold tracking-wide text-muted uppercase">Safety limits</h2>
-        <p className="mb-1 text-xs text-muted">
-          Enforced after the engine decides, as a separate check. Nothing in the model below can raise or bypass them.
-        </p>
+      <CollapsibleSection
+        title="Safety limits"
+        description="Hard account-wide limits enforced after every strategy decision. The model cannot bypass them."
+      >
         <Row label="Max position size" hint="Largest share of total account value in one stock.">
           <Num value={asPct(s.maxPositionPct)} step={1} suffix="%" onCommit={(v) => save({ maxPositionPct: v / 100 })} />
         </Row>
@@ -296,10 +445,9 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
         <Row label="Minimum expected edge" hint="Expected overnight move must beat estimated round-trip costs by this many percentage points.">
           <Num value={s.minExpectedEdgePct} step={0.1} suffix="%" onCommit={(v) => save({ minExpectedEdgePct: v })} />
         </Row>
-      </section>
+      </CollapsibleSection>
 
-      <section className="rounded-xl border border-border bg-surface p-5">
-        <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Timing</h2>
+      <CollapsibleSection title="Overnight timing" description="Research, approval and order timing relative to the market close.">
         <Row label="Start researching" hint="Minutes before the market closes.">
           <Num value={s.minutesBeforeCloseToResearch} onCommit={(v) => save({ minutesBeforeCloseToResearch: v })} suffix="min before close" />
         </Row>
@@ -309,11 +457,12 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
         <Row label="Approval window">
           <Num value={s.approvalWindowMinutes} onCommit={(v) => save({ approvalWindowMinutes: v })} suffix="min" />
         </Row>
-      </section>
+      </CollapsibleSection>
 
-      <section className="rounded-xl border border-border bg-surface p-5">
-        <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Operations and diagnostics</h2>
-        <p className="mb-1 text-xs text-muted">Controls storage growth, worker health thresholds, background cadence and diagnostic detail. These do not change trading decisions.</p>
+      <CollapsibleSection
+        title="Operations and diagnostics"
+        description="Storage retention, worker health, background cadence and logging detail. These do not change trading decisions."
+      >
         <Row label="Keep logs" hint="Detailed application events older than this are removed automatically.">
           <Num min={1} max={365} value={s.ops.logRetentionDays} suffix="days" onCommit={(v) => save({ ops: { logRetentionDays: v } })} />
         </Row>
@@ -353,7 +502,9 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
         <Row label="Log successful jobs" hint="Adds a line for every completed job. Leave off for quieter long-term operation; job timings are still recorded.">
           <Toggle on={s.ops.verboseLogging} onChange={(v) => save({ ops: { verboseLogging: v } })} label="Verbose successful job logging" />
         </Row>
-      </section>
+      </CollapsibleSection>
+
+      <DataMaintenancePanel onComplete={() => router.refresh()} />
 
       <Link
         href="/quant"

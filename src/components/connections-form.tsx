@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, XCircle } from "lucide-react";
+import { CollapsibleSection } from "./collapsible-section";
 
 interface Status {
   t212Env: "demo" | "live";
@@ -59,16 +60,14 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
   const source = (s: string | null) => (s === "settings" ? "saved in Settings" : s === "environment" ? "from environment" : "not set");
 
   return (
-    <section className="rounded-xl border border-border bg-surface p-5">
-      <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">API connections</h2>
-      <p className="mb-4 text-xs text-muted">
-        Trading 212 is the only external service this app needs. Keys are checked against the real service before they are saved, encrypted on the
-        server, and never sent back to your browser. Leave a box empty to keep the current value.
-      </p>
-
-      <div className="grid gap-6 md:grid-cols-2">
+    <CollapsibleSection
+      title="API connections"
+      description="Trading 212 credentials and the account environment used by both strategies."
+    >
+      <div className="grid gap-6 pt-4 md:grid-cols-2">
         <div>
           <h3 className="mb-2 text-sm font-medium">Trading 212 <span className="text-xs font-normal text-muted">· {st.hasT212Keys ? `${st.t212KeyHint} (${source(st.t212Source)})` : "not set"}</span></h3>
+          <p className="mb-2 text-xs text-muted">Keys are verified before saving, encrypted on the server and never returned to the browser. Leave a box empty to keep its current value.</p>
           <div className="space-y-2">
             <select value={env} onChange={(e) => setEnv(e.target.value as "demo" | "live")} className={input} aria-label="Account type">
               <option value="demo">Demo (practice money)</option>
@@ -102,7 +101,7 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
           Test saved keys
         </button>
       </div>
-    </section>
+    </CollapsibleSection>
   );
 }
 
@@ -128,9 +127,8 @@ export function PasswordForm() {
   }
 
   return (
-    <section className="rounded-xl border border-border bg-surface p-5">
-      <h2 className="mb-3 text-sm font-semibold tracking-wide text-muted uppercase">Change password</h2>
-      <form onSubmit={submit} className="grid max-w-md gap-2">
+    <CollapsibleSection title="Change password" description="Update the dashboard login and invalidate sessions on every other device.">
+      <form onSubmit={submit} className="grid max-w-md gap-2 pt-4">
         <input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} placeholder="Current password" className={input} />
         <input type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} placeholder="New password (8+ characters)" className={input} />
         <input type="password" autoComplete="new-password" value={again} onChange={(e) => setAgain(e.target.value)} placeholder="Repeat new password" className={input} />
@@ -141,6 +139,6 @@ export function PasswordForm() {
         </div>
         <Verdict r={msg ?? undefined} />
       </form>
-    </section>
+    </CollapsibleSection>
   );
 }

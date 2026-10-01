@@ -14,6 +14,13 @@ The scheduler coordinates capital rather than running two independent bots: over
 an intraday trade finishes, but a new intraday entry is withheld when its maximum hold could overlap an upcoming
 overnight buy window. Every order is still rechecked against the shared account immediately before submission.
 
+Settings groups use collapsible sections to keep the operational controls manageable. The **Data maintenance**
+section can clear operational logs, trading history, or research/model data independently, or restart all generated
+bot data while preserving configuration, login and API credentials. Every action requires an exact typed phrase and
+a second browser confirmation. Trading and full resets are refused while a position, active execution, or unresolved
+broker order exists, and all resets wait for the shared scheduler lease before changing data. Any trading, research,
+or full reset also turns on the kill switch so erased loss history or model state cannot immediately permit a new trade.
+
 **No AI provider, no AI API keys, no per-run cost.** Every decision is made by a quantitative engine that runs inside
 the app: a logistic model trained on the app's own past outcomes, conditional historical analogues of each stock's
 own behaviour, a free headline sentiment engine, and rules mined from the outcome history. Market data and news come
