@@ -5,7 +5,7 @@ import { analyseIntraday } from "../lib/intraday/strategy";
 import { selectUniverse, type UniverseSymbol } from "../lib/intraday/universe";
 import { overlappingOvernightRun } from "../lib/intraday/coordination";
 import { log } from "../lib/log";
-import { getIntradayBars, getQuotes, yahooSymbol } from "../lib/market/data";
+import { getIntradayBars, getValidatedQuotes, yahooSymbol } from "../lib/market/data";
 import type { Session } from "../lib/market/calendar";
 import { tradingDateOf } from "../lib/market/sessions";
 import { estimatedRoundTripCostPct } from "../lib/risk/guardrails";
@@ -155,12 +155,33 @@ export async function scanIntradayMarket(
     return { created: false, message: `No ${market} stocks are available in the ${selection.source} intraday pool`, candidates: 0, source: selection.source };
   }
 
-  const quoteMap = await getQuotes(mapped.map((row) => row.symbol), deadline);
+  const quoteMap = await getValidatedQuotes(mapped.map((row) => row.symbol), market, deadline);
   const maxAge = market === "UK" ? settings.ops.maxUkQuoteAgeSeconds : settings.ops.maxUsQuoteAgeSeconds;
+  const providerDisagreements =
+    market === "US"
+      ? [...quoteMap.values()].filter(
+          (quote) =>
+            quote.divergencePct != null &&
+            quote.divergencePct > settings.marketData.maxProviderDivergencePct,
+        )
+      : [];
+  if (providerDisagreements.length > 0) {
+    const action = settings.marketData.blockOnProviderDivergence ? "Skipped" : "Detected";
+    await log("warn", "intraday", `${action} ${providerDisagreements.length} US quote(s) with FMP/Yahoo disagreement beyond the configured threshold.`, undefined, {
+      thresholdPct: settings.marketData.maxProviderDivergencePct,
+      symbols: providerDisagreements.slice(0, 10).map((quote) => ({ symbol: quote.symbol, divergencePct: quote.divergencePct })),
+    });
+  }
   const livePool = mapped
     .flatMap((row) => {
       const quote = quoteMap.get(row.symbol);
       if (!quote || quote.quoteAt == null || now.getTime() - quote.quoteAt > maxAge * 1000) return [];
+      if (
+        market === "US" &&
+        settings.marketData.blockOnProviderDivergence &&
+        quote.divergencePct != null &&
+        quote.divergencePct > settings.marketData.maxProviderDivergencePct
+      ) return [];
       if (quote.spreadPct != null && quote.spreadPct > tuning.maxSpreadPct) return [];
       const volumeRatio = quote.avgVolume3m > 0 ? quote.volume / quote.avgVolume3m : 0;
       const dollarVolume = quote.price * quote.volume;
@@ -257,7 +278,11 @@ export async function scanIntradayMarket(
       emaFast: best.signal.emaFast,
       emaSlow: best.signal.emaSlow,
       spreadPct: best.quote.spreadPct,
-    },
+      quoteSource: best.quote.source,
+      quoteValidationStatus: best.quote.validationStatus,
+      providerDivergencePct: best.quote.divergencePct,
+      secondaryPrice: best.quote.secondaryPrice,
+    } as never,
     evaluation: best.signal,
     researchSummary: best.signal.reason,
     picked: true,
@@ -268,6 +293,9 @@ export async function scanIntradayMarket(
     symbol: best.symbol,
     signal: best.signal,
     spreadPct: best.quote.spreadPct,
+    quoteSource: best.quote.source,
+    quoteValidationStatus: best.quote.validationStatus,
+    providerDivergencePct: best.quote.divergencePct,
   });
   return {
     created: true,
@@ -339,7 +367,7 @@ async function manageIntradayExit(run: Run, now: Date): Promise<void> {
   if (!trade) return;
   const candidate = await db.select().from(candidates).where(eq(candidates.runId, run.id)).get();
   const symbol = (candidate?.signals as Record<string, string> | null)?.yahoo;
-  const quote = symbol ? (await getQuotes([symbol])).get(symbol) : null;
+  const quote = symbol ? (await getValidatedQuotes([symbol], run.market)).get(symbol) : null;
   const maxQuoteAgeSeconds = run.market === "UK" ? settings.ops.maxUkQuoteAgeSeconds : settings.ops.maxUsQuoteAgeSeconds;
   const quoteAgeMs = quote?.quoteAt == null ? null : Math.max(0, now.getTime() - quote.quoteAt);
   const price = quote && quoteAgeMs != null && quoteAgeMs <= maxQuoteAgeSeconds * 1000 ? quote.price : null;
@@ -405,7 +433,7 @@ async function manageIntradayExit(run: Run, now: Date): Promise<void> {
       decisionId: trade.decisionId,
       referencePrice: price ?? undefined,
       referenceAt: price == null ? undefined : quote?.quoteAt ?? undefined,
-      referenceSource: "yahoo",
+      referenceSource: quote?.source === "fmp" || quote?.source === "fmp+yahoo" ? "fmp" : "yahoo",
       quoteAgeMs: price == null ? undefined : quoteAgeMs ?? undefined,
       spreadPct: price == null ? undefined : quote?.spreadPct,
     });

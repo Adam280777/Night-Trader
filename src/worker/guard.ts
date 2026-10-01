@@ -6,6 +6,7 @@ import { getAccountState, openTrade, pnlWindows, tryClient } from "../lib/accoun
 import { getInstrumentsCached, marketOf } from "../lib/t212/instruments";
 import type { AccountState } from "../lib/account";
 import { anyUnknownOrders } from "../lib/t212/safeOrder";
+import { getHighImpactEconomicEvents } from "../lib/market/fmp";
 
 /** Guardrail check for a stored decision using fresh account data. Used at decision time and again right before buying. */
 export async function checkDecisionGuardrails(
@@ -43,6 +44,35 @@ export async function checkDecisionGuardrails(
     result.allowed = false;
     result.investValue = 0;
     result.reasons.push("An earlier order has an unknown outcome; resolve it manually before trading.");
+  }
+  if (settings.marketData.fmpEnabled && settings.marketData.blockHighImpactEconomicEvents) {
+    const now = new Date();
+    const horizonHours =
+      run.strategy === "intraday_momentum"
+        ? Math.max(1, settings.marketData.intradayEconomicEventBufferMinutes / 60)
+        : settings.marketData.overnightEconomicEventLookaheadHours;
+    try {
+      const events = await getHighImpactEconomicEvents(now, horizonHours);
+      const relevant = events.find((event) => {
+        const deltaMinutes = (event.at.getTime() - now.getTime()) / 60_000;
+        return run.strategy === "intraday_momentum"
+          ? Math.abs(deltaMinutes) <= settings.marketData.intradayEconomicEventBufferMinutes
+          : deltaMinutes >= 0 && deltaMinutes <= settings.marketData.overnightEconomicEventLookaheadHours * 60;
+      });
+      if (relevant) {
+        result.allowed = false;
+        result.investValue = 0;
+        result.reasons.push(`High-impact US economic event inside the safety window: ${relevant.event} at ${relevant.at.toISOString()}.`);
+      }
+    } catch (error) {
+      if (settings.marketData.requireFmpForUsOrders && run.market === "US") {
+        result.allowed = false;
+        result.investValue = 0;
+        result.reasons.push(`FMP event-risk check failed while FMP is required: ${String(error).slice(0, 140)}`);
+      } else {
+        result.notes.push(`FMP event-risk calendar unavailable: ${String(error).slice(0, 140)}`);
+      }
+    }
   }
   return { result, account: acct, instrument: inst ? { type: inst.type, name: inst.name, currencyCode: inst.currencyCode } : null };
 }

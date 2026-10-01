@@ -3,7 +3,7 @@ import { getDb, schema } from "../lib/db";
 import { log } from "../lib/log";
 import { getSettings } from "../lib/config";
 import { tryClient } from "../lib/account";
-import { fxRate, getQuotes } from "../lib/market/data";
+import { fxRate, getValidatedQuotes } from "../lib/market/data";
 import { quantityFor, unitCostInAccountCcy } from "../lib/risk/sizing";
 import { adverseSlippagePct, findHistorical, submitMarketOrder, waitForOrder } from "../lib/t212/safeOrder";
 import { checkDecisionGuardrails } from "./guard";
@@ -40,7 +40,7 @@ export async function executeBuy(runId: number): Promise<void> {
     const cand = (await db.select().from(candidates).where(eq(candidates.runId, runId)).all()).find((c) => c.ticker === d.ticker);
     const yahoo = (cand?.signals as Record<string, string> | null)?.yahoo;
     if (!yahoo) throw new Error("Missing Yahoo symbol for candidate");
-    const quote = (await getQuotes([yahoo])).get(yahoo);
+    const quote = (await getValidatedQuotes([yahoo], run.market)).get(yahoo);
     if (!quote) throw new Error(`No live quote for ${yahoo}`);
     if (quote.quoteAt == null) {
       setRunStatus(runId, "blocked", "Execution quote had no timestamp, so freshness could not be verified.");
@@ -49,6 +49,33 @@ export async function executeBuy(runId: number): Promise<void> {
     }
     const quoteAgeMs = Math.max(0, Date.now() - quote.quoteAt);
     const settings = await getSettings();
+    if (
+      run.market === "US" &&
+      settings.marketData.requireFmpForUsOrders &&
+      quote.source !== "fmp" &&
+      quote.source !== "fmp+yahoo"
+    ) {
+      setRunStatus(runId, "blocked", "FMP real-time validation was required but unavailable.");
+      await log("warn", "execute", `Blocked ${d.ticker}: FMP real-time validation was required but unavailable.`, runId, {
+        quoteSource: quote.source ?? "yahoo",
+        validationStatus: quote.validationStatus ?? "unknown",
+      });
+      return;
+    }
+    if (
+      settings.marketData.blockOnProviderDivergence &&
+      quote.divergencePct != null &&
+      quote.divergencePct > settings.marketData.maxProviderDivergencePct
+    ) {
+      setRunStatus(runId, "blocked", `FMP and Yahoo prices disagreed by ${quote.divergencePct.toFixed(2)}%.`);
+      await log("warn", "execute", `Blocked ${d.ticker}: provider price disagreement ${quote.divergencePct.toFixed(2)}%.`, runId, {
+        quoteSource: quote.source,
+        primaryPrice: quote.price,
+        secondaryPrice: quote.secondaryPrice,
+        divergencePct: quote.divergencePct,
+      });
+      return;
+    }
     const maxAgeSeconds = run.market === "UK" ? settings.ops.maxUkQuoteAgeSeconds : settings.ops.maxUsQuoteAgeSeconds;
     if (quoteAgeMs > maxAgeSeconds * 1000) {
       setRunStatus(runId, "blocked", `Execution quote was ${Math.round(quoteAgeMs / 1000)}s old (maximum ${maxAgeSeconds}s).`);
@@ -81,7 +108,7 @@ export async function executeBuy(runId: number): Promise<void> {
         decisionId: d.id,
         referencePrice: quote.price,
         referenceAt: quote.quoteAt,
-        referenceSource: "yahoo",
+        referenceSource: quote.source === "fmp" || quote.source === "fmp+yahoo" ? "fmp" : "yahoo",
         quoteAgeMs,
         spreadPct: quote.spreadPct,
       });

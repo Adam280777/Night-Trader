@@ -27,6 +27,18 @@ export const OpsSchema = z.object({
 });
 export type OpsSettings = z.infer<typeof OpsSchema>;
 
+export const MarketDataSchema = z.object({
+  fmpEnabled: z.boolean().default(true),
+  requireFmpForUsOrders: z.boolean().default(false),
+  maxProviderDivergencePct: z.number().min(0.05).max(10).default(0.75),
+  blockOnProviderDivergence: z.boolean().default(true),
+  earningsLookaheadHours: z.number().int().min(6).max(168).default(48),
+  blockHighImpactEconomicEvents: z.boolean().default(true),
+  intradayEconomicEventBufferMinutes: z.number().int().min(0).max(360).default(90),
+  overnightEconomicEventLookaheadHours: z.number().int().min(0).max(48).default(18),
+});
+export type MarketDataSettings = z.infer<typeof MarketDataSchema>;
+
 export const IntradaySchema = z.object({
   /** Signal generation is enabled by default, but orders require the separate switch below. */
   enabled: z.boolean().default(true),
@@ -96,6 +108,8 @@ export const SettingsSchema = z.object({
   intraday: IntradaySchema.default(IntradaySchema.parse({})),
   /** Housekeeping, retention and diagnostics. None of this changes what the engine decides. */
   ops: OpsSchema.default(OpsSchema.parse({})),
+  /** Market-data validation and scheduled-event safety. */
+  marketData: MarketDataSchema.default(MarketDataSchema.parse({})),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -141,6 +155,7 @@ export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
   if (patch.quant) merged.quant = { ...current.quant, ...patch.quant };
   if (patch.intraday) merged.intraday = { ...current.intraday, ...patch.intraday };
   if (patch.ops) merged.ops = { ...current.ops, ...patch.ops };
+  if (patch.marketData) merged.marketData = { ...current.marketData, ...patch.marketData };
   if (patch.markets) merged.markets = { ...current.markets, ...patch.markets };
   const next = SettingsSchema.parse(merged);
   for (const [key, value] of Object.entries(next)) {
@@ -153,6 +168,7 @@ interface StoredConn {
   t212Env?: "demo" | "live";
   t212Key?: string;
   t212Secret?: string;
+  fmpKey?: string;
 }
 
 export async function readConnection(): Promise<StoredConn> {
@@ -164,6 +180,7 @@ export interface ConnectionPatch {
   t212Env?: "demo" | "live";
   t212Key?: string;
   t212Secret?: string;
+  fmpKey?: string;
 }
 
 export async function writeConnection(patch: ConnectionPatch) {
@@ -172,6 +189,7 @@ export async function writeConnection(patch: ConnectionPatch) {
   if (patch.t212Env) next.t212Env = patch.t212Env;
   if (patch.t212Key) next.t212Key = encrypt(patch.t212Key);
   if (patch.t212Secret) next.t212Secret = encrypt(patch.t212Secret);
+  if (patch.fmpKey) next.fmpKey = encrypt(patch.fmpKey);
   await getDb().insert(schema.settings).values({ key: "_conn", value: next }).onConflictDoUpdate({ target: schema.settings.key, set: { value: next } });
 }
 
@@ -185,6 +203,7 @@ export async function getEnvConfig() {
     t212Env: envName as "demo" | "live",
     t212Key: dec(c.t212Key) ?? process.env.T212_API_KEY ?? "",
     t212Secret: dec(c.t212Secret) ?? process.env.T212_API_SECRET ?? "",
+    fmpKey: dec(c.fmpKey) ?? process.env.FMP_API_KEY ?? "",
   };
 }
 

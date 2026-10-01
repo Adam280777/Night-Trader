@@ -27,8 +27,19 @@ import { BACKFILL_STATS_KEY, type BackfillStats } from "./backfill";
 
 const { candidates, decisions, runs, lessons } = schema;
 
+/** Live evidence loses half its training influence after 180 days; replay/backfill weights are unchanged. */
+export const LIVE_OUTCOME_HALF_LIFE_DAYS = 180;
+
+export function liveOutcomeWeight(tradingDate: string, now = new Date()): number {
+  const observedAt = Date.parse(`${tradingDate}T00:00:00Z`);
+  if (!Number.isFinite(observedAt)) return 1;
+  const ageDays = Math.max(0, (now.getTime() - observedAt) / 86_400_000);
+  return 0.5 ** (ageDays / LIVE_OUTCOME_HALF_LIFE_DAYS);
+}
+
 export interface LabelledRow {
   id: number;
+  tradingDate: string;
   ticker: string;
   market: "US" | "UK";
   features: Record<string, number>;
@@ -44,7 +55,7 @@ export interface LabelledRow {
 
 async function labelledRows(afterId = 0, tuning: QuantTuning = DEFAULT_TUNING): Promise<LabelledRow[]> {
   const rows = await getDb()
-    .select({ c: candidates, market: runs.market, marketContext: decisions.marketContext })
+    .select({ c: candidates, market: runs.market, tradingDate: runs.tradingDate, marketContext: decisions.marketContext })
     .from(candidates)
     .innerJoin(runs, eq(candidates.runId, runs.id))
     .leftJoin(decisions, eq(decisions.runId, runs.id))
@@ -53,7 +64,7 @@ async function labelledRows(afterId = 0, tuning: QuantTuning = DEFAULT_TUNING): 
 
   return rows
     .filter((r) => r.c.features && r.c.overnightReturnPct != null)
-    .map(({ c, market, marketContext }) => {
+    .map(({ c, market, tradingDate, marketContext }) => {
       // Same hurdle the decision uses (costs plus opening-auction slippage), or the model learns a different target.
       const cost = breakEvenPct(
         market,
@@ -65,6 +76,7 @@ async function labelledRows(afterId = 0, tuning: QuantTuning = DEFAULT_TUNING): 
       );
       return {
         id: c.id,
+        tradingDate,
         ticker: c.ticker,
         market,
         features: c.features as Record<string, number>,
@@ -79,13 +91,17 @@ async function labelledRows(afterId = 0, tuning: QuantTuning = DEFAULT_TUNING): 
 }
 
 /** Trains on every scored candidate not seen before. Returns how many rows were consumed. */
-export async function trainFromOutcomes(): Promise<{ trained: number; state: ModelState }> {
+export async function trainFromOutcomes(now = new Date()): Promise<{ trained: number; state: ModelState }> {
   const tuning = await getTuning();
   const state = await loadModel();
   const rows = await labelledRows(state.lastCandidateId, tuning);
   if (rows.length === 0) return { trained: 0, state };
 
-  const samples: TrainingSample[] = rows.map((r) => ({ features: r.features, label: r.label }));
+  const samples: TrainingSample[] = rows.map((r) => ({
+    features: r.features,
+    label: r.label,
+    weight: liveOutcomeWeight(r.tradingDate, now),
+  }));
   const next = train(state, samples, tuning);
   next.lastCandidateId = Math.max(state.lastCandidateId, ...rows.map((r) => r.id));
   await saveModel(next);
@@ -268,6 +284,71 @@ export function reviewTrade(i: TradeReviewInput): Review {
   return { verdict, summary, lessons: [] };
 }
 
+const PROMOTION_MIN_PREDICTIONS = 100;
+const PROMOTION_MAX_CALIBRATION_ERROR = 0.1;
+
+export interface PromotionEvidence {
+  chronologicalSamples: number;
+  recentSamples: number;
+  recentBrier: number | null;
+  recentBaselineBrier: number | null;
+  calibrationSamples: number;
+  calibrationError: number | null;
+}
+
+export interface PromotionReadiness {
+  status: "insufficient_evidence" | "needs_improvement" | "ready_for_review";
+  checks: { key: "samples" | "brier" | "calibration"; label: string; passed: boolean; detail: string }[];
+  advisoryOnly: true;
+}
+
+/**
+ * A read-only governance signal. It deliberately has no persistence or execution path: even a
+ * "ready" result only invites human review and can never promote a model or change trading.
+ */
+export function assessPromotionReadiness(e: PromotionEvidence): PromotionReadiness {
+  const enoughSamples = e.chronologicalSamples >= PROMOTION_MIN_PREDICTIONS && e.recentSamples >= PROMOTION_MIN_PREDICTIONS / 2;
+  const beatsBaseline =
+    e.recentBrier != null &&
+    e.recentBaselineBrier != null &&
+    e.recentBrier < e.recentBaselineBrier;
+  const calibrated =
+    e.calibrationSamples >= PROMOTION_MIN_PREDICTIONS &&
+    e.calibrationError != null &&
+    e.calibrationError <= PROMOTION_MAX_CALIBRATION_ERROR;
+  const checks: PromotionReadiness["checks"] = [
+    {
+      key: "samples",
+      label: "Live chronological evidence",
+      passed: enoughSamples,
+      detail: `${e.chronologicalSamples}/${PROMOTION_MIN_PREDICTIONS} predictions; ${e.recentSamples}/${PROMOTION_MIN_PREDICTIONS / 2} in the recent half`,
+    },
+    {
+      key: "brier",
+      label: "Recent Brier beats baseline",
+      passed: beatsBaseline,
+      detail:
+        e.recentBrier == null || e.recentBaselineBrier == null
+          ? "not measurable yet"
+          : `${e.recentBrier.toFixed(3)} vs ${e.recentBaselineBrier.toFixed(3)} baseline (lower is better)`,
+    },
+    {
+      key: "calibration",
+      label: "Calibration evidence",
+      passed: calibrated,
+      detail: `${e.calibrationSamples}/${PROMOTION_MIN_PREDICTIONS} calibrated outcomes; error ${
+        e.calibrationError == null ? "not measurable" : `${(e.calibrationError * 100).toFixed(1)}pp`
+      } (limit ${(PROMOTION_MAX_CALIBRATION_ERROR * 100).toFixed(0)}pp)`,
+    },
+  ];
+  const status = !enoughSamples || e.calibrationSamples < PROMOTION_MIN_PREDICTIONS
+    ? "insufficient_evidence"
+    : checks.every((check) => check.passed)
+      ? "ready_for_review"
+      : "needs_improvement";
+  return { status, checks, advisoryOnly: true };
+}
+
 /** Everything the learning page needs about the model itself. */
 export async function getModelReport() {
   const state = await loadModel();
@@ -292,6 +373,15 @@ export async function getModelReport() {
     ),
   );
   const backfill = (await getKv<BackfillStats>(BACKFILL_STATS_KEY))?.value ?? null;
+  const recent = walkForward?.slices.find((slice) => slice.label === "Recent half") ?? null;
+  const promotion = assessPromotionReadiness({
+    chronologicalSamples: walkForward?.n ?? 0,
+    recentSamples: recent?.n ?? 0,
+    recentBrier: recent?.accuracy?.brier ?? null,
+    recentBaselineBrier: recent?.accuracy?.baselineBrier ?? null,
+    calibrationSamples: d.reliability.reduce((sum, bucket) => sum + bucket.n, 0),
+    calibrationError: d.calibrationError,
+  });
   const activeRules = await getDb()
     .select()
     .from(lessons)
@@ -305,6 +395,7 @@ export async function getModelReport() {
     calibrationError: d.calibrationError,
     accuracy,
     walkForward,
+    promotion,
     backfill,
     reliability: d.reliability,
     learned: d.learned.slice(0, 10).map((l) => ({ ...l, label: FEATURE_BY_KEY.get(l.key)?.label ?? l.key })),

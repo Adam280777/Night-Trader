@@ -3,6 +3,7 @@ import { marketOf, type Market } from "../t212/instruments";
 import { getDailyBars, getNextEarnings, getQuotes, yahooSymbol, type Bar, type Quote } from "../market/data";
 import { clamp, finite, mean, rsi, sma, std, winsorize } from "./stats";
 import { DEFAULT_TUNING, type QuantTuning } from "./tuning";
+import { getSettings } from "../config";
 
 /**
  * Price-derived signals. Everything here is computable from free daily bars plus one quote, and is
@@ -257,10 +258,11 @@ export async function scoreSymbols(items: SymbolRef[], o: ScoreOpts): Promise<Ca
 
 /** Earnings inside the next two sessions makes the overnight distribution two-tailed, so it is looked up per candidate. */
 export async function attachEarnings(cands: Candidate[]): Promise<void> {
+  const lookaheadMs = (await getSettings()).marketData.earningsLookaheadHours * 3_600_000;
   await Promise.all(
     cands.map(async (c) => {
       const d = await getNextEarnings(c.yahoo);
-      c.signals.earningsWithin2d = !!d && d.getTime() - Date.now() < 2 * 86_400_000 && d.getTime() > Date.now() - 86_400_000;
+      c.signals.earningsWithin2d = !!d && d.getTime() - Date.now() < lookaheadMs && d.getTime() > Date.now() - 86_400_000;
     }),
   );
 }

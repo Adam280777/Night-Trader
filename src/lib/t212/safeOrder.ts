@@ -15,7 +15,7 @@ export interface SubmitArgs {
   decisionId: number | null;
   referencePrice?: number;
   referenceAt?: number;
-  referenceSource?: "yahoo" | "broker_preopen";
+  referenceSource?: "yahoo" | "fmp" | "broker_preopen";
   quoteAgeMs?: number;
   spreadPct?: number | null;
 }

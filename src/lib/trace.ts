@@ -2,6 +2,7 @@ import { getDb, schema } from "./db";
 import { getKv, setKv } from "./kv";
 import { errorDetail, log, type LogDetail } from "./log";
 import { yahooStats, type YahooStats } from "./market/data";
+import { fmpStats, type FmpStats } from "./market/fmp";
 
 export type Traced<T> = { ok: true; value: T; ms: number } | { ok: false; error: unknown; ms: number };
 
@@ -28,16 +29,18 @@ const REPEAT_ERROR_MS = 30 * 60_000;
 export async function traced<T>(job: string, fn: () => Promise<T>, opts: TraceOptions<T> = {}): Promise<Traced<T>> {
   const startedAt = Date.now();
   const before = yahooStats();
+  const fmpBefore = fmpStats();
   try {
     const value = await fn();
     const ms = Date.now() - startedAt;
     if (opts.record?.(value) !== false) {
-      await store(job, startedAt, ms, true, null, { ...opts.detail?.(value), yahoo: compactYahoo(before) });
+      await store(job, startedAt, ms, true, null, { ...opts.detail?.(value), yahoo: compactYahoo(before), fmp: compactFmp(fmpBefore) });
       if (opts.slowMs && ms > opts.slowMs) {
         await log("warn", "trace", `${job} took ${(ms / 1000).toFixed(0)}s (slow threshold ${(opts.slowMs / 1000).toFixed(0)}s).`, opts.runId, {
           job,
           ms,
           yahoo: compactYahoo(before),
+          fmp: compactFmp(fmpBefore),
         });
       } else if (opts.verbose) {
         await log("info", "trace", `${job} finished in ${(ms / 1000).toFixed(1)}s${opts.summary ? `: ${opts.summary(value)}` : ""}`, opts.runId, { job, ms });
@@ -47,9 +50,23 @@ export async function traced<T>(job: string, fn: () => Promise<T>, opts: TraceOp
   } catch (error) {
     const ms = Date.now() - startedAt;
     const message = String(error instanceof Error ? error.message : error).slice(0, 300);
-    await store(job, startedAt, ms, false, message, { yahoo: compactYahoo(before) });
+    await store(job, startedAt, ms, false, message, { yahoo: compactYahoo(before), fmp: compactFmp(fmpBefore) });
     await reportFailure(job, message, error, ms, opts.runId);
     return { ok: false, error, ms };
+  }
+
+  function compactFmp(before: FmpStats): LogDetail | undefined {
+    const now = fmpStats();
+    const calls = now.calls - before.calls;
+    if (calls <= 0) return undefined;
+    const failures = now.failures - before.failures;
+    return {
+      calls,
+      failures,
+      timeouts: now.timeouts - before.timeouts,
+      avgMs: Math.round((now.totalMs - before.totalMs) / calls),
+      lastError: failures > 0 ? now.lastError : null,
+    };
   }
 }
 

@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, isNotNull, notInArray, sql } from "drizzle
 import { getDb, schema } from "./db";
 import { getEnvConfig, getSettings } from "./config";
 import { getDashboardAccountState, pnlWindows, tryClient, type AccountState } from "./account";
-import { getActiveLessons, getPerformanceStats } from "./quant/memory";
+import { getActiveLessons, getDailyAfterCostAttribution, getPerformanceStats } from "./quant/memory";
 import { getModelReport } from "./quant/learn";
 import { strategyRisk } from "./quant/evaluation";
 
@@ -97,7 +97,7 @@ export async function getRunDetail(runId: number) {
 
 export async function getLearning() {
   const db = getDb();
-  const [stats, closed, scored, noTrade, active, model] = await Promise.all([
+  const [stats, closed, scored, noTrade, active, model, attribution] = await Promise.all([
     getPerformanceStats(),
     db
       .select({ date: runs.tradingDate, ticker: trades.ticker, pnlPct: trades.pnlPct, confidence: decisions.confidence, expected: decisions.expectedMovePct })
@@ -115,8 +115,9 @@ export async function getLearning() {
     db.select({ id: runs.id }).from(runs).where(inArray(runs.status, ["no_trade", "blocked"])),
     getActiveLessons(100),
     getModelReport(),
+    getDailyAfterCostAttribution(),
   ]);
-  return { stats, closed, scored, lessons: active, noTradeDays: noTrade.length, model, risk: strategyRisk(closed.map((row) => row.pnlPct ?? NaN)) };
+  return { stats, closed, scored, lessons: active, noTradeDays: noTrade.length, model, attribution, risk: strategyRisk(closed.map((row) => row.pnlPct ?? NaN)) };
 }
 
 export async function getSettingsView() {

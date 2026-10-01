@@ -2,6 +2,8 @@ import YahooFinance from "yahoo-finance2";
 import type { TradableInstrument } from "../t212/client";
 import { marketOf } from "../t212/instruments";
 import type { Fundamentals } from "../quant/schemas";
+import { getFmpEarnings, tryFmpClient } from "./fmp";
+import { getSettings } from "../config";
 
 const yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
 // Yahoo's response schema drifts often; we validate the fields we use ourselves.
@@ -62,6 +64,93 @@ export interface Quote {
   bid: number | null;
   ask: number | null;
   spreadPct: number | null;
+  source?: "yahoo" | "fmp" | "fmp+yahoo";
+  secondaryPrice?: number | null;
+  divergencePct?: number | null;
+  validationStatus?: "verified" | "single_source" | "unavailable";
+}
+
+export function providerDivergencePct(primary: number, secondary: number): number {
+  if (!(primary > 0 && secondary > 0)) return Number.POSITIVE_INFINITY;
+  return (Math.abs(primary - secondary) / ((primary + secondary) / 2)) * 100;
+}
+
+/**
+ * Uses FMP as the real-time US price and Yahoo as an independent cross-check.
+ * UK and non-equity symbols remain Yahoo-only because Starter coverage is US-only.
+ */
+export async function getValidatedQuotes(
+  symbols: string[],
+  market: "US" | "UK",
+  deadline?: number,
+): Promise<Map<string, Quote>> {
+  const yahooQuotes = await getQuotes(symbols, deadline);
+  const out = new Map<string, Quote>();
+  for (const [symbol, quote] of yahooQuotes) {
+    out.set(symbol, { ...quote, source: "yahoo", secondaryPrice: null, divergencePct: null, validationStatus: "single_source" });
+  }
+  if (market !== "US" || (deadline !== undefined && Date.now() >= deadline)) return out;
+
+  if (!(await getSettings()).marketData.fmpEnabled) return out;
+  const client = await tryFmpClient();
+  if (!client) {
+    for (const [symbol, quote] of out) out.set(symbol, { ...quote, validationStatus: "unavailable" });
+    return out;
+  }
+
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(6, symbols.length) }, async () => {
+      while (next < symbols.length && !(deadline !== undefined && Date.now() >= deadline)) {
+        const symbol = symbols[next++];
+        if (symbol.startsWith("^") || symbol.endsWith("=X") || symbol.endsWith("=F") || symbol.endsWith(".L")) continue;
+        try {
+          const fmp = await client.quote(symbol);
+          if (!fmp) continue;
+          const yahooQuote = yahooQuotes.get(symbol);
+          const secondaryPrice = yahooQuote?.price ?? null;
+          const divergencePct =
+            secondaryPrice != null && secondaryPrice > 0
+              ? providerDivergencePct(fmp.price, secondaryPrice)
+              : null;
+          const previous = yahooQuote ?? {
+            symbol,
+            price: fmp.price,
+            prevClose: fmp.change != null ? fmp.price - fmp.change : fmp.price,
+            changePct: fmp.changePercentage ?? 0,
+            volume: fmp.volume ?? 0,
+            avgVolume3m: fmp.averageVolume ?? fmp.volume ?? 0,
+            marketCap: fmp.marketCap ?? null,
+            currency: "USD",
+            name: fmp.name ?? symbol,
+            quoteAt: null,
+            bid: null,
+            ask: null,
+            spreadPct: null,
+          };
+
+          out.set(symbol, {
+            ...previous,
+            price: fmp.price,
+            prevClose: fmp.change != null ? fmp.price - fmp.change : previous.prevClose,
+            changePct: fmp.changePercentage ?? previous.changePct,
+            volume: fmp.volume ?? previous.volume,
+            avgVolume3m: fmp.averageVolume ?? previous.avgVolume3m,
+            marketCap: fmp.marketCap ?? previous.marketCap,
+            name: fmp.name ?? previous.name,
+            quoteAt: fmp.timestamp * 1000,
+            source: yahooQuote ? "fmp+yahoo" : "fmp",
+            secondaryPrice,
+            divergencePct,
+            validationStatus: yahooQuote ? "verified" : "single_source",
+          });
+        } catch {
+          // FMP records the exact failure in provider telemetry; a Yahoo quote remains visibly single-source.
+        }
+      }
+    }),
+  );
+  return out;
 }
 
 /** Map a T212 instrument to a Yahoo symbol. US: AAPL; LSE: VOD.L */
@@ -168,6 +257,14 @@ export async function getIntradayBars(symbol: string, days = 5): Promise<Bar[]> 
 
 /** Next earnings date if known (overnight earnings = binary gap risk). */
 export async function getNextEarnings(symbol: string): Promise<Date | null> {
+  if (!symbol.endsWith(".L") && (await getSettings()).marketData.fmpEnabled) {
+    try {
+      const fmp = await getFmpEarnings(symbol);
+      if (fmp) return fmp;
+    } catch {
+      // Provider telemetry records the error; Yahoo remains an independent fallback.
+    }
+  }
   try {
     const r = obj(await yahoo(`earnings ${symbol}`, () => yf.quoteSummary(symbol, { modules: ["calendarEvents"] }, OPTS)));
     const earnings = obj(obj(r.calendarEvents).earnings);

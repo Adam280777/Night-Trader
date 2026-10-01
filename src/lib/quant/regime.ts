@@ -13,6 +13,8 @@
 import { getDailyBars, getQuotes, type Quote } from "../market/data";
 import { clamp, finite, sma } from "./stats";
 import type { MarketContext, Source } from "./schemas";
+import { getHighImpactEconomicEvents } from "../market/fmp";
+import { getSettings } from "../config";
 
 const US_SYMBOLS = ["^GSPC", "^IXIC", "ES=F", "NQ=F", "^VIX"];
 const UK_SYMBOLS = ["^FTSE", "^FTMC", "GBPUSD=X"];
@@ -128,7 +130,17 @@ export async function getRegime(market: "US" | "UK", now = new Date()): Promise<
   const volRegime = volOf(vix);
   const riskOff = volRegime === "stressed" || (vixChangePct != null && vixChangePct > 12) || trendRegime === "bear";
 
-  const riskEventsTonight = [...calendarEvents(now, market), ...(await bellwetherEarnings())];
+  let economicEvents: string[] = [];
+  try {
+    const settings = await getSettings();
+    if (settings.marketData.fmpEnabled) {
+      economicEvents = (await getHighImpactEconomicEvents(now, settings.marketData.overnightEconomicEventLookaheadHours))
+        .map((event) => `${event.event} (${event.at.toISOString()})`);
+    }
+  } catch {
+    economicEvents = ["FMP economic calendar was unavailable; scheduled-event risk could not be verified"];
+  }
+  const riskEventsTonight = [...calendarEvents(now, market), ...(await bellwetherEarnings()), ...economicEvents];
 
   const bias: MarketContext["futuresBias"] =
     market === "UK"

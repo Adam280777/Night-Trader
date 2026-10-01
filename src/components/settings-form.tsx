@@ -418,6 +418,36 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
       </CollapsibleSection>
 
       <CollapsibleSection
+        title="Market data and event risk"
+        description="FMP Starter real-time US validation, independent Yahoo cross-checks and scheduled-event blocks."
+      >
+        <Row label="Use Financial Modeling Prep" hint="Uses FMP Starter for US real-time quotes and event calendars. Yahoo remains an independent cross-check and the UK source.">
+          <Toggle on={s.marketData.fmpEnabled} onChange={(v) => save({ marketData: { fmpEnabled: v } })} label="Use Financial Modeling Prep" />
+        </Row>
+        <Row label="Require FMP for US orders" hint="Blocks new US orders when FMP is unavailable instead of using a single Yahoo quote. Exits are never blocked by this setting.">
+          <Toggle on={s.marketData.requireFmpForUsOrders} onChange={(v) => save({ marketData: { requireFmpForUsOrders: v } })} label="Require FMP for US orders" />
+        </Row>
+        <Row label="Maximum provider disagreement" hint="Difference between FMP and Yahoo prices beyond this level is considered unsafe.">
+          <Num min={0.05} max={10} step={0.05} value={s.marketData.maxProviderDivergencePct} suffix="%" onCommit={(v) => save({ marketData: { maxProviderDivergencePct: v } })} />
+        </Row>
+        <Row label="Block on provider disagreement">
+          <Toggle on={s.marketData.blockOnProviderDivergence} onChange={(v) => save({ marketData: { blockOnProviderDivergence: v } })} label="Block on provider disagreement" />
+        </Row>
+        <Row label="Earnings risk window" hint="Overnight candidates with earnings inside this window are flagged and vetoed by the quant earnings control.">
+          <Num min={6} max={168} value={s.marketData.earningsLookaheadHours} suffix="hours" onCommit={(v) => save({ marketData: { earningsLookaheadHours: v } })} />
+        </Row>
+        <Row label="Block major economic events" hint="Prevents new entries around FMP high-impact US economic releases. Existing positions remain exit-capable.">
+          <Toggle on={s.marketData.blockHighImpactEconomicEvents} onChange={(v) => save({ marketData: { blockHighImpactEconomicEvents: v } })} label="Block high-impact economic events" />
+        </Row>
+        <Row label="Intraday event buffer">
+          <Num min={0} max={360} value={s.marketData.intradayEconomicEventBufferMinutes} suffix="minutes" onCommit={(v) => save({ marketData: { intradayEconomicEventBufferMinutes: v } })} />
+        </Row>
+        <Row label="Overnight event lookahead" hint="Blocks an overnight entry when a high-impact event falls before the expected exit horizon.">
+          <Num min={0} max={48} value={s.marketData.overnightEconomicEventLookaheadHours} suffix="hours" onCommit={(v) => save({ marketData: { overnightEconomicEventLookaheadHours: v } })} />
+        </Row>
+      </CollapsibleSection>
+
+      <CollapsibleSection
         title="Safety limits"
         description="Hard account-wide limits enforced after every strategy decision. The model cannot bypass them."
       >

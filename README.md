@@ -27,16 +27,23 @@ continue to request authoritative account data immediately before trading.
 
 **No AI provider, no AI API keys, no per-run cost.** Every decision is made by a quantitative engine that runs inside
 the app: a logistic model trained on the app's own past outcomes, conditional historical analogues of each stock's
-own behaviour, a free headline sentiment engine, and rules mined from the outcome history. Market data and news come
-from Yahoo Finance, which needs no key. Trading 212 supplies the tradable instrument map, exchange schedule, account
-state, orders, positions, and authoritative fills.
+own behaviour, a free headline sentiment engine, and rules mined from the outcome history. FMP Starter supplies
+real-time US quotes plus earnings and economic calendars. Yahoo Finance remains an independent US price cross-check,
+the five-minute/history source, and the UK fallback. Trading 212 supplies the tradable instrument map, exchange
+schedule, account state, orders, positions, and authoritative fills.
+
+FMP Starter does not provide real-time UK coverage. US entry quotes therefore prefer FMP and record their difference
+from Yahoo; a configurable disagreement threshold can block a trade. The operator can also require FMP for every new
+US order. Missing FMP never prevents an existing position from being exited. Provider source, freshness, disagreement,
+failures, latency and event-risk reasons are retained in candidate, order and job diagnostics.
 
 ## How the intraday strategy works
 
 1. The one-minute scheduler checks whether each enabled market is inside its configured entry window.
 2. Continuous study rotates through every eligible Trading 212 stock in bounded slices, recording liquidity,
    momentum, volume and historical evidence. Each intraday scan takes the strongest recently studied names.
-3. Fresh quotes prefilter that dynamic pool for price movement, volume, spread and data age. Only the configured
+3. Fresh FMP quotes, cross-checked against Yahoo for US stocks, prefilter that dynamic pool for price movement,
+   volume, spread, data age and provider agreement. Only the configured
    top number receive the more expensive Yahoo five-minute history request, keeping Vercel execution bounded.
 4. A deterministic momentum setup checks 20-minute movement, fast/slow EMA alignment, VWAP, relative volume,
    recent-high breakout, quote freshness, and quoted spread. Every threshold is configurable.
@@ -69,8 +76,8 @@ Hybrid mode also gives those symbols priority, and Manual mode remains available
    blended in log-odds from the learned model, kernel-weighted historical analogues, and mined rules.
 5. **Decide** — expected move minus costs gives an edge; names are ranked on a risk-adjusted (lower-bound) edge and
    sized with a fraction of Kelly. If nothing clears the bar the answer is no trade.
-6. **Guardrails** — position caps, minimum cash, daily/weekly loss breakers, cost checks and the kill switch sit
-   downstream and cannot be overridden.
+6. **Guardrails** — position caps, minimum cash, daily/weekly loss breakers, cost checks, provider agreement,
+   configured earnings/economic-event windows and the kill switch sit downstream and cannot be overridden.
 7. **Learn** — the overnight return of *every* shortlisted name is recorded, picked or not. Those counterfactuals
    train the model and re-derive the rule set, so it sharpens every trading day.
 
@@ -134,7 +141,9 @@ on demand and start fresh after a few hours of quiet.
 2. Create a Turso database (`turso db create trader`, then `turso db show trader --url` and `turso db tokens create trader`).
 3. Import the repo in Vercel and set the environment variables from `.env.example`
    (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `APP_PASSWORD`, `SECRETS_KEY`, `CRON_SECRET`). The build applies database migrations automatically.
-4. Open the site, sign in, go to **Settings** and paste your Trading 212 key and secret (they are tested before they are stored).
+4. Open the site, sign in, go to **Settings** and paste your Trading 212 key/secret and FMP Starter key. Each
+   connection is tested independently before it is encrypted and stored. `FMP_API_KEY` is also available as an
+   environment fallback.
 5. Create the timer. Either:
    - **cron-job.org** (recommended, free): a job hitting `https://YOUR-APP.vercel.app/api/cron/tick` every minute with the header
      `Authorization: Bearer <CRON_SECRET>`; or
@@ -160,7 +169,7 @@ Without `TURSO_DATABASE_URL` a local SQLite file (`data/trader.db`) is used.
 Starts in dry-run (no orders). Demo trading needs a Trading 212 demo key; live trading needs a live key and typing `TRADE LIVE`.
 There is a kill switch, position caps, a daily/weekly loss breaker and independent approval/order switches.
 Nothing here can guarantee returns. Overnight holds carry gap risk. Intraday data is polled rather than streamed,
-so a fast move can cross a software-managed exit before the next scheduler tick. Vercel, Yahoo, the external timer,
-the database, and Trading 212 are all dependencies; broker-side protection should be preferred whenever it becomes
+so a fast move can cross a software-managed exit before the next scheduler tick. Vercel, FMP, Yahoo, the external
+timer, the database, and Trading 212 are all dependencies; broker-side protection should be preferred whenever it becomes
 available through the public API. Stamp duty, FX fees, spread, and slippage can erase small edges. Both strategies
 are deliberately willing to sit out. This is not financial advice.

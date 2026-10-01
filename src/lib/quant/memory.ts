@@ -19,6 +19,85 @@ export interface PerfStats {
 
 const avg = (a: number[]) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
 
+export type AttributionStrategy = "overnight" | "intraday_momentum";
+export type AttributionEvidence = "model_selected" | "intraday_rules" | "exploration_override";
+
+export interface AttributionInput {
+  date: string;
+  market: "US" | "UK";
+  mode: "dry" | "demo" | "live";
+  strategy: AttributionStrategy;
+  forced: boolean;
+  pnl: number | null;
+  pnlPct: number | null;
+}
+
+export interface DailyAttribution {
+  date: string;
+  market: "US" | "UK";
+  mode: "dry" | "demo" | "live";
+  strategy: AttributionStrategy;
+  evidenceType: AttributionEvidence;
+  trades: number;
+  avgRecordedReturnPct: number | null;
+  totalAfterCostPnl: number | null;
+  cashPnlTrades: number;
+}
+
+const evidenceType = (row: AttributionInput): AttributionEvidence =>
+  row.forced ? "exploration_override" : row.strategy === "overnight" ? "model_selected" : "intraday_rules";
+
+/** Groups persisted closed-trade results; cash P&L is broker-authoritative where it was recorded. */
+export function summariseDailyAttribution(rows: AttributionInput[]): DailyAttribution[] {
+  const groups = new Map<string, { row: AttributionInput; returns: number[]; pnls: number[]; trades: number }>();
+  for (const row of rows) {
+    const evidence = evidenceType(row);
+    const key = `${row.date}:${row.market}:${row.mode}:${row.strategy}:${evidence}`;
+    const group = groups.get(key) ?? { row, returns: [], pnls: [], trades: 0 };
+    group.trades++;
+    if (row.pnl != null && Number.isFinite(row.pnl)) group.pnls.push(row.pnl);
+    if (row.pnlPct != null && Number.isFinite(row.pnlPct)) group.returns.push(row.pnlPct);
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map(({ row, returns, pnls, trades }) => ({
+      date: row.date,
+      market: row.market,
+      mode: row.mode,
+      strategy: row.strategy,
+      evidenceType: evidenceType(row),
+      trades,
+      avgRecordedReturnPct: avg(returns),
+      totalAfterCostPnl: pnls.length ? pnls.reduce((sum, value) => sum + value, 0) : null,
+      cashPnlTrades: pnls.length,
+    }))
+    .sort((a, b) =>
+      b.date.localeCompare(a.date) ||
+      a.market.localeCompare(b.market) ||
+      a.mode.localeCompare(b.mode) ||
+      a.strategy.localeCompare(b.strategy) ||
+      a.evidenceType.localeCompare(b.evidenceType),
+    );
+}
+
+export async function getDailyAfterCostAttribution(): Promise<DailyAttribution[]> {
+  const rows = await getDb()
+    .select({
+      date: runs.tradingDate,
+      market: runs.market,
+      mode: runs.mode,
+      strategy: runs.strategy,
+      forced: decisions.forced,
+      pnl: trades.pnl,
+      pnlPct: trades.pnlPct,
+    })
+    .from(trades)
+    .innerJoin(decisions, eq(trades.decisionId, decisions.id))
+    .innerJoin(runs, eq(trades.runId, runs.id))
+    .where(eq(trades.status, "closed"));
+  return summariseDailyAttribution(rows);
+}
+
 export async function getPerformanceStats(): Promise<PerfStats> {
   const db = getDb();
   const rows = await db

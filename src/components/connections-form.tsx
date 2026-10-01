@@ -10,6 +10,9 @@ interface Status {
   hasT212Keys: boolean;
   t212Source: string | null;
   t212KeyHint: string | null;
+  hasFmpKey: boolean;
+  fmpSource: string | null;
+  fmpKeyHint: string | null;
 }
 type Result = { ok: boolean; detail: string };
 
@@ -31,6 +34,7 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
   const [env, setEnv] = useState(initial.t212Env);
   const [key, setKey] = useState("");
   const [secret, setSecret] = useState("");
+  const [fmpKey, setFmpKey] = useState("");
   const [res, setRes] = useState<Record<string, Result>>({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -47,6 +51,7 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
       if (Object.values(j.results as Record<string, Result>).some((x) => x.ok)) {
         setKey("");
         setSecret("");
+        setFmpKey("");
       }
       router.refresh();
     } catch {
@@ -56,13 +61,13 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
     }
   }
 
-  const changed = !!(key || secret || env !== st.t212Env);
+  const changed = !!(key || secret || fmpKey || env !== st.t212Env);
   const source = (s: string | null) => (s === "settings" ? "saved in Settings" : s === "environment" ? "from environment" : "not set");
 
   return (
     <CollapsibleSection
       title="API connections"
-      description="Trading 212 credentials and the account environment used by both strategies."
+      description="Trading 212 execution and Financial Modeling Prep market-data credentials."
     >
       <div className="grid gap-6 pt-4 md:grid-cols-2">
         <div>
@@ -80,11 +85,21 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
         </div>
 
         <div>
-          <h3 className="mb-2 text-sm font-medium">Market data and decisions</h3>
-          <p className="text-xs text-muted">
-            Prices, history and headlines come from Yahoo Finance, which needs no key. Every decision is made by the built-in model that runs inside
-            this app and trains on its own results, so there is no AI provider to configure and nothing to pay per run.
+          <h3 className="mb-2 text-sm font-medium">Financial Modeling Prep <span className="text-xs font-normal text-muted">· {st.hasFmpKey ? `${st.fmpKeyHint} (${source(st.fmpSource)})` : "not set"}</span></h3>
+          <p className="mb-2 text-xs text-muted">
+            FMP Starter supplies real-time US quotes and scheduled-event calendars. Yahoo remains an independent price check and the UK fallback because Starter does not include real-time UK coverage.
           </p>
+          <label htmlFor="fmp-api-key" className="sr-only">Financial Modeling Prep API key</label>
+          <input
+            id="fmp-api-key"
+            type="password"
+            autoComplete="off"
+            value={fmpKey}
+            onChange={(event) => setFmpKey(event.target.value)}
+            placeholder="FMP Starter API key"
+            className={input}
+          />
+          <Verdict r={res.fmp} />
         </div>
       </div>
 
@@ -92,7 +107,7 @@ export function ConnectionsForm({ initial }: { initial: Status }) {
       <div className="mt-4 flex flex-wrap gap-2">
         <button
           disabled={busy || !changed}
-          onClick={() => call("PUT", { t212Env: env, t212Key: key || undefined, t212Secret: secret || undefined })}
+          onClick={() => call("PUT", { t212Env: env, t212Key: key || undefined, t212Secret: secret || undefined, fmpKey: fmpKey || undefined })}
           className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:text-black"
         >
           {busy ? "Checking…" : "Verify & save"}

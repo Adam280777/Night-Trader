@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 const avg = (a: number[]) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
 
 export default async function Learning() {
-  const { stats, closed, scored, lessons, noTradeDays, model, risk } = await getLearning();
+  const { stats, closed, scored, lessons, noTradeDays, model, attribution, risk } = await getLearning();
   const pickedAvg = avg(scored.filter((s) => s.picked).map((s) => s.ret!));
   const restAvg = avg(scored.filter((s) => !s.picked).map((s) => s.ret!));
   const allAvg = avg(scored.map((s) => s.ret!));
@@ -36,6 +36,64 @@ export default async function Learning() {
         <Card><Stat label="Profit factor" value={risk?.profitFactor == null ? "n/a" : risk.profitFactor.toFixed(2)} tone={risk?.profitFactor != null && risk.profitFactor > 1 ? "good" : "bad"} sub="gross gains divided by gross losses" /></Card>
         <Card><Stat label="Worst overnight" value={risk ? pct(risk.worstPct) : "n/a"} tone={tone(risk?.worstPct)} sub={risk ? `best ${pct(risk.bestPct)} · downside deviation ${pct(risk.downsideDeviationPct)}` : undefined} /></Card>
       </div>
+
+      <Card className="mt-4" title="Advisory promotion readiness">
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <p className="text-sm font-medium">
+              {model.promotion.status === "ready_for_review"
+                ? "Evidence threshold met — human review may be warranted"
+                : model.promotion.status === "needs_improvement"
+                  ? "Not ready — measured quality needs improvement"
+                  : "Not ready — insufficient live evidence"}
+            </p>
+            <span className="rounded-full bg-surface-2 px-2.5 py-1 text-xs text-muted">Read-only advisory</span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {model.promotion.checks.map((check) => (
+              <div key={check.key} className="rounded-lg bg-surface-2 px-3 py-3">
+                <p className={check.passed ? "text-sm text-accent" : "text-sm text-danger"}>{check.passed ? "Pass" : "Not met"} · {check.label}</p>
+                <p className="mt-1 text-xs text-muted">{check.detail}</p>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-muted">This panel never promotes a model, changes settings, sizes a position, or alters trading. It only summarizes live, chronologically stored evidence for operator review.</p>
+        </div>
+      </Card>
+
+      <Card className="mt-4" title="Daily after-cost attribution">
+        {attribution.length === 0 ? (
+          <Empty>Needs a closed trade.</Empty>
+        ) : (
+          <>
+            <div className="table-shell">
+              <table className="w-full text-sm">
+                <caption className="sr-only">Daily trading attribution grouped by market, strategy, evidence type, and mode</caption>
+                <thead className="text-left text-xs text-muted">
+                  <tr><th className="py-2 font-medium">Date</th><th className="py-2 font-medium">Market</th><th className="py-2 font-medium">Strategy / evidence</th><th className="py-2 text-right font-medium">Trades</th><th className="py-2 text-right font-medium">Recorded return</th><th className="py-2 text-right font-medium">After-cost cash P&amp;L</th></tr>
+                </thead>
+                <tbody className="tabular divide-y divide-border">
+                  {attribution.slice(0, 30).map((row) => (
+                    <tr key={`${row.date}:${row.market}:${row.mode}:${row.strategy}:${row.evidenceType}`}>
+                      <td className="py-2">{row.date}</td>
+                      <td className="py-2">{row.market}</td>
+                      <td className="py-2">{row.strategy === "overnight" ? "Overnight" : "Intraday momentum"} · {row.evidenceType === "model_selected" ? "model selected" : row.evidenceType === "intraday_rules" ? "rules selected" : "exploration override"} · {row.mode}</td>
+                      <td className="py-2 text-right">{row.trades}</td>
+                      <td className={`py-2 text-right ${row.avgRecordedReturnPct == null ? "" : row.avgRecordedReturnPct >= 0 ? "text-accent" : "text-danger"}`}>{pct(row.avgRecordedReturnPct)}</td>
+                      <td className="py-2 text-right">
+                        {row.totalAfterCostPnl == null
+                          ? "n/a"
+                          : `${row.totalAfterCostPnl >= 0 ? "+" : ""}${row.totalAfterCostPnl.toFixed(2)}${row.cashPnlTrades < row.trades ? ` (${row.cashPnlTrades}/${row.trades})` : ""}`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-3 text-xs text-muted">Grouped from persisted closed trades by trading day, market, strategy, and evidence source. Cash P&amp;L is after-cost where a broker-authoritative or simulated net amount was stored; “n/a” is not treated as zero. Recorded return is the stored fill return (net of estimated costs for dry runs, before explicit fees for broker fills), so it is context rather than a substitute for cash P&amp;L.</p>
+          </>
+        )}
+      </Card>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <Card title="Return of each trade">

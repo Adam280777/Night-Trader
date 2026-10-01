@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getEnvConfig, updateSettings, writeConnection } from "@/lib/config";
-import { connectionStatus, testT212 } from "@/lib/connections";
+import { connectionStatus, testFmp, testT212 } from "@/lib/connections";
 import { openTrade } from "@/lib/account";
 
 export const dynamic = "force-dynamic";
@@ -10,6 +10,7 @@ const Body = z.object({
   t212Env: z.enum(["demo", "live"]).optional(),
   t212Key: z.string().trim().max(500).optional(),
   t212Secret: z.string().trim().max(500).optional(),
+  fmpKey: z.string().trim().max(500).optional(),
 });
 
 export async function GET() {
@@ -39,6 +40,12 @@ export async function PUT(req: Request) {
     }
   }
 
+  if (b.fmpKey) {
+    const result = await testFmp(b.fmpKey);
+    results.fmp = result;
+    if (result.ok) await writeConnection({ fmpKey: b.fmpKey });
+  }
+
   return NextResponse.json({ results, status: await connectionStatus() });
 }
 
@@ -46,5 +53,6 @@ export async function PUT(req: Request) {
 export async function POST() {
   const c = await getEnvConfig();
   const t212 = await testT212(c.t212Env, c.t212Key, c.t212Secret);
-  return NextResponse.json({ results: { t212 }, status: await connectionStatus() });
+  const fmp = await testFmp(c.fmpKey);
+  return NextResponse.json({ results: { t212, fmp }, status: await connectionStatus() });
 }

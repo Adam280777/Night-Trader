@@ -6,12 +6,13 @@ import { computeSignals, majorUnitPrice, overnightGaps, type Signals } from "./s
 import { findAnalogues, unconditionalAnalogue } from "./analogues";
 import { freshModel, predict, train, applyCalibration } from "./model";
 import { matchesRule, applyRules } from "./rules";
-import { mineLessons, type LabelledRow } from "./learn";
+import { assessPromotionReadiness, liveOutcomeWeight, mineLessons, type LabelledRow } from "./learn";
+import { summariseDailyAttribution } from "./memory";
 import { decide, type CandidateInput, type DecideInput } from "./decide";
 import { extractFeatures, priorWeights } from "./features";
 import { DEFAULT_TUNING, QuantTuningSchema, TUNING_GROUPS, TUNING_PARAMS, TUNING_PRESETS } from "./tuning";
 import { accuracyOf, auc } from "./accuracy";
-import { REPLAY_FROZEN_FEATURES, marketContextSeries, replayFrozenFeatures, replaySymbol, selectShortlisted, type ReplayRow } from "./backfill";
+import { REPLAY_FROZEN_FEATURES, marketContextSeries, replayFrozenFeatures, replaySymbol, selectShortlisted, toTrainingSamples, type ReplayRow } from "./backfill";
 import { ResearchSchema } from "./schemas";
 import { chronologicalEvaluation, strategyRisk } from "./evaluation";
 import type { Bar } from "../market/data";
@@ -296,6 +297,7 @@ describe("rules", () => {
 describe("lesson mining", () => {
   const row = (gapSharpe: number, label: boolean, market: "US" | "UK" = "US", id = 0): LabelledRow => ({
     id,
+    tradingDate: "2026-01-01",
     ticker: "ACME_US_EQ",
     market,
     label,
@@ -602,6 +604,55 @@ describe("model training options", () => {
     expect(next.samples).toBe(30);
     const calibrated = train(freshModel(), samples, DEFAULT_TUNING);
     expect(calibrated.calibration.reduce((s, b) => s + b.n, 0)).toBe(30);
+  });
+
+  it("conservatively time-decays live outcomes at a 180-day half-life", () => {
+    const now = new Date("2026-07-01T00:00:00Z");
+    expect(liveOutcomeWeight("2026-07-01", now)).toBe(1);
+    expect(liveOutcomeWeight("2026-01-02", now)).toBeCloseTo(0.5, 8);
+    expect(liveOutcomeWeight("not-a-date", now)).toBe(1);
+  });
+
+  it("leaves the explicit replay weight unchanged", () => {
+    const replay: ReplayRow = { symbol: "TST", date: "2025-01-01", score: 1, features: {}, label: true, gapPct: 0.5 };
+    expect(toTrainingSamples([replay], 0.2)[0].weight).toBe(0.2);
+  });
+});
+
+describe("quant governance", () => {
+  const evidence = {
+    chronologicalSamples: 120,
+    recentSamples: 60,
+    recentBrier: 0.16,
+    recentBaselineBrier: 0.24,
+    calibrationSamples: 120,
+    calibrationError: 0.06,
+  };
+
+  it("keeps promotion readiness advisory and requires evidence plus measured skill", () => {
+    const ready = assessPromotionReadiness(evidence);
+    expect(ready.status).toBe("ready_for_review");
+    expect(ready.advisoryOnly).toBe(true);
+    expect(assessPromotionReadiness({ ...evidence, chronologicalSamples: 99 }).status).toBe("insufficient_evidence");
+    expect(assessPromotionReadiness({ ...evidence, recentBrier: 0.25 }).status).toBe("needs_improvement");
+  });
+
+  it("separates daily after-cost attribution by market, strategy and evidence", () => {
+    const rows = [
+      { date: "2026-09-30", market: "US" as const, mode: "live" as const, strategy: "overnight" as const, forced: false, pnl: 20, pnlPct: 3 },
+      { date: "2026-09-30", market: "US" as const, mode: "live" as const, strategy: "overnight" as const, forced: false, pnl: -10, pnlPct: -2 },
+      { date: "2026-09-30", market: "US" as const, mode: "demo" as const, strategy: "overnight" as const, forced: true, pnl: null, pnlPct: -0.5 },
+      { date: "2026-09-30", market: "UK" as const, mode: "dry" as const, strategy: "intraday_momentum" as const, forced: false, pnl: 4, pnlPct: 3 },
+    ];
+    const report = summariseDailyAttribution(rows);
+    expect(report).toHaveLength(3);
+    const model = report.find((row) => row.evidenceType === "model_selected")!;
+    expect(model.trades).toBe(2);
+    expect(model.totalAfterCostPnl).toBe(10);
+    expect(model.avgRecordedReturnPct).toBeCloseTo(0.5, 8);
+    const exploration = report.find((row) => row.evidenceType === "exploration_override")!;
+    expect(exploration.totalAfterCostPnl).toBeNull();
+    expect(exploration.avgRecordedReturnPct).toBe(-0.5);
   });
 });
 
