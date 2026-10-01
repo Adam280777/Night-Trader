@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AlertTriangle, BookOpen, CircleDot, Info, Pause, Play, TriangleAlert } from "lucide-react";
 import type { ActivityFeedData } from "@/lib/activity";
 
@@ -25,6 +25,7 @@ function time(ms: number, local: boolean): string {
 
 const LEVEL_ICON = { info: Info, warn: TriangleAlert, error: AlertTriangle } as const;
 const LEVEL_CLASS = { info: "text-muted", warn: "text-warn", error: "text-danger" } as const;
+const subscribeMounted = () => () => {};
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
@@ -40,12 +41,8 @@ export function ActivityFeed({ initial }: { initial: Feed }) {
   const [feed, setFeed] = useState<Feed>(initial);
   const [live, setLive] = useState(true);
   const [failed, setFailed] = useState(false);
-  const [mounted, setMounted] = useState(false);
+  const mounted = useSyncExternalStore(subscribeMounted, () => true, () => false);
   const liveRef = useRef(true);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   // Mirrored into a ref so the polling loop below can read the latest value without being torn
   // down and restarted every time it changes.
@@ -149,6 +146,15 @@ export function ActivityFeed({ initial }: { initial: Feed }) {
           </>
         ) : (
           <p className="mt-2 text-sm text-muted">No run has been created yet. One is scheduled automatically ahead of each close.</p>
+        )}
+        {feed.scheduling.length > 0 && (
+          <ul className="mt-3 space-y-1 border-t border-border pt-3 text-xs text-muted">
+            {feed.scheduling.map((s) => (
+              <li key={s.market}>
+                <b>{s.market}</b> · {s.text} · checked {ago(s.at, now)}
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 

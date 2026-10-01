@@ -77,13 +77,13 @@ async function bellwetherEarnings(): Promise<string[]> {
   return due.length ? [`Megacap results before the next open: ${due.join(", ")}`] : [];
 }
 
-function trendOf(vsSma20: number, vsSma50: number): MarketContext["trendRegime"] {
+export function trendOf(vsSma20: number, vsSma50: number): MarketContext["trendRegime"] {
   if (vsSma20 > 0.5 && vsSma50 > 1) return "bull";
   if (vsSma20 < -0.5 && vsSma50 < -1) return "bear";
   return "neutral";
 }
 
-function volOf(vix: number | null): MarketContext["volRegime"] {
+export function volOf(vix: number | null): MarketContext["volRegime"] {
   if (vix == null) return "unknown";
   if (vix < 15) return "calm";
   if (vix < 24) return "normal";

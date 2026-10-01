@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 :root {
+  color-scheme: light;
   --bg: #f5f6f8;
   --surface: #ffffff;
   --surface-2: #f0f2f5;
@@ -15,10 +16,23 @@
   --warn-soft: #fef0d9;
   --info: #175cd3;
   --info-soft: #e3edfd;
+  /* Categorical chart palette (colour-blind friendly, distinct from the green/red used for sign). */
+  --chart-1: #2f6fed;
+  --chart-2: #e8710a;
+  --chart-3: #8b5cf6;
+  --chart-4: #0891b2;
+  --chart-5: #db2777;
+  --chart-6: #a16207;
+  --card-shadow: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.04);
+  --pop-shadow: 0 8px 24px rgb(16 24 40 / 0.14), 0 2px 6px rgb(16 24 40 / 0.08);
+  --ring: #2f6fed;
+  --skeleton-a: #eceff3;
+  --skeleton-b: #f7f8fa;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
+    color-scheme: dark;
     --bg: #0b0d10;
     --surface: #14171c;
     --surface-2: #1b1f26;
@@ -33,6 +47,17 @@
     --warn-soft: #32270d;
     --info: #7cb0ff;
     --info-soft: #14233d;
+    --chart-1: #6ea0ff;
+    --chart-2: #fb9b3d;
+    --chart-3: #b197fc;
+    --chart-4: #38c5e0;
+    --chart-5: #f472b6;
+    --chart-6: #e0b341;
+    --card-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+    --pop-shadow: 0 8px 24px rgb(0 0 0 / 0.55), 0 2px 6px rgb(0 0 0 / 0.4);
+    --ring: #7cb0ff;
+    --skeleton-a: #1b1f26;
+    --skeleton-b: #242a33;
   }
 }
 
@@ -51,6 +76,14 @@
   --color-warn-soft: var(--warn-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --shadow-card: var(--card-shadow);
+  --shadow-pop: var(--pop-shadow);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -61,6 +94,113 @@ body {
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
+.table-shell {
+  max-inline-size: 100%;
+  overflow: auto;
+  container-type: inline-size;
+}
+
+.table-shell thead {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/* Keyboard focus ring (mouse clicks stay clean). */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Loading placeholder shimmer. */
+.skeleton {
+  background: linear-gradient(90deg, var(--skeleton-a) 25%, var(--skeleton-b) 50%, var(--skeleton-a) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Thin themed scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* CSS-only popover used by InfoHint: shown on hover or keyboard focus of the trigger. */
+.info-hint .info-hint-pop {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.info-hint:hover .info-hint-pop,
+.info-hint:focus-within .info-hint-pop {
+  visibility: visible;
+  opacity: 1;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  80%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+.pulse-ring {
+  animation: pulse-ring 1.8s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .skeleton {
+    animation: none;
+    background: var(--skeleton-a);
+  }
+  .pulse-ring {
+    display: none;
+  }
 }

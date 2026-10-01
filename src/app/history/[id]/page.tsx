@@ -32,7 +32,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         <Card title="Decision" className="mb-4">
           <div className="space-y-3">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <div className="text-xl font-semibold">{decision.action === "BUY" ? decision.name ?? decision.ticker : "No trade today"}</div>
+              <div className="text-xl font-semibold">{decision.action === "BUY" ? decision.name ?? decision.ticker : "No trade today"}{decision.forced && <span className="ml-2 rounded-full bg-surface-2 px-2 py-0.5 align-middle text-xs font-medium text-muted">demo exploration</span>}</div>
               {decision.action === "BUY" && <div className="tabular text-sm text-muted">Confidence {Math.round((decision.confidence ?? 0) * 100)}% · expects {pct(decision.expectedMovePct)} · asked to invest {Math.round((decision.investPct ?? 0) * 100)}% of free cash</div>}
             </div>
             <p className="text-sm">{decision.thesis}</p>

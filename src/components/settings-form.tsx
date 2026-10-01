@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { SlidersHorizontal } from "lucide-react";
+import { AlertTriangle, Info, SlidersHorizontal } from "lucide-react";
 import type { Settings } from "@/lib/config";
 import { DEFAULT_TUNING, TUNING_PARAMS } from "@/lib/quant/tuning";
+import { settingsIssues } from "@/lib/settings-checks";
 
 interface Props {
   settings: Settings;
@@ -85,20 +86,41 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
 
   async function save(patch: Record<string, unknown>) {
     setMsg(null);
-    const r = await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
-    const j = await r.json();
-    if (!r.ok) return setMsg({ ok: false, text: j.error ?? "Could not save" });
-    setS(j);
-    setMsg({ ok: true, text: "Saved" });
-    router.refresh();
+    try {
+      const r = await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+      const j = (await r.json()) as Settings & { error?: string };
+      if (!r.ok) return setMsg({ ok: false, text: j.error ?? `Could not save (${r.status})` });
+      setS(j);
+      setMsg({ ok: true, text: "Saved" });
+      router.refresh();
+    } catch (error) {
+      setMsg({ ok: false, text: error instanceof Error ? `Could not save: ${error.message}` : "Could not save" });
+    }
   }
 
   const asPct = (v: number) => Math.round(v * 1000) / 10;
   const tunedCount = TUNING_PARAMS.filter((p) => s.quant[p.key] !== DEFAULT_TUNING[p.key]).length;
+  const issues = settingsIssues(s);
 
   return (
     <div className="space-y-6">
       {msg && <p role="status" className={`text-sm ${msg.ok ? "text-accent" : "text-danger"}`}>{msg.text}</p>}
+      {issues.length > 0 && (
+        <section aria-labelledby="settings-checks" className="rounded-xl border border-border bg-surface p-4">
+          <h2 id="settings-checks" className="text-sm font-semibold">Configuration checks</h2>
+          <ul className="mt-2 space-y-2 text-sm">
+            {issues.map((issue, index) => {
+              const Icon = issue.level === "warn" ? AlertTriangle : Info;
+              return (
+                <li key={`${issue.field}-${index}`} className={`flex gap-2 ${issue.level === "warn" ? "text-warn" : "text-info"}`}>
+                  <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
+                  <span>{issue.message}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
 
       <section className="rounded-xl border border-border bg-surface p-5">
         <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Trading mode</h2>
@@ -126,6 +148,14 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
         <Row label="US market">
           <Toggle on={s.markets.US} onChange={(v) => save({ markets: { US: v } })} label="US market" />
         </Row>
+        <Row label="Demo: always make a trade to learn from" hint="Demo mode only. If the engine would pass, it buys its best-ranked unflagged name anyway (no approval needed) so the real fill and overnight move become training data. Never applies in dry-run or live.">
+          <Toggle on={s.demoForceTrade} onChange={(v) => save({ demoForceTrade: v })} label="Demo exploration trades" />
+        </Row>
+        {s.demoForceTrade && (
+          <Row label="Demo exploration stake" hint="Share of free cash staked on an exploration trade. The position-size cap below still applies.">
+            <Num value={asPct(s.demoForceInvestPct)} step={1} suffix="%" onCommit={(v) => save({ demoForceInvestPct: v / 100 })} />
+          </Row>
+        )}
         <Row label="UK market" hint="UK buys pay stamp duty, so a UK candidate has to clear a higher bar before it is worth taking.">
           <Toggle on={s.markets.UK} onChange={(v) => save({ markets: { UK: v } })} label="UK market" />
         </Row>
@@ -172,6 +202,50 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
         </Row>
         <Row label="Approval window">
           <Num value={s.approvalWindowMinutes} onCommit={(v) => save({ approvalWindowMinutes: v })} suffix="min" />
+        </Row>
+      </section>
+
+      <section className="rounded-xl border border-border bg-surface p-5">
+        <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Operations and diagnostics</h2>
+        <p className="mb-1 text-xs text-muted">Controls storage growth, worker health thresholds, background cadence and diagnostic detail. These do not change trading decisions.</p>
+        <Row label="Keep logs" hint="Detailed application events older than this are removed automatically.">
+          <Num min={1} max={365} value={s.ops.logRetentionDays} suffix="days" onCommit={(v) => save({ ops: { logRetentionDays: v } })} />
+        </Row>
+        <Row label="Keep job diagnostics">
+          <Num min={1} max={365} value={s.ops.jobRetentionDays} suffix="days" onCommit={(v) => save({ ops: { jobRetentionDays: v } })} />
+        </Row>
+        <Row label="Keep account-value history">
+          <Num min={7} max={3650} value={s.ops.equityRetentionDays} suffix="days" onCommit={(v) => save({ ops: { equityRetentionDays: v } })} />
+        </Row>
+        <Row label="Account snapshot interval" hint="Smaller values produce a smoother chart but retain more rows.">
+          <Num min={5} max={360} value={s.ops.equitySnapshotMinutes} suffix="minutes" onCommit={(v) => save({ ops: { equitySnapshotMinutes: v } })} />
+        </Row>
+        <Row label="Outcome check interval">
+          <Num min={5} max={1440} value={s.ops.outcomesIntervalMinutes} suffix="minutes" onCommit={(v) => save({ ops: { outcomesIntervalMinutes: v } })} />
+        </Row>
+        <Row label="Learning interval">
+          <Num min={1} max={72} value={s.ops.learningIntervalHours} suffix="hours" onCommit={(v) => save({ ops: { learningIntervalHours: v } })} />
+        </Row>
+        <Row label="History replay interval">
+          <Num min={1} max={240} value={s.ops.backfillIntervalMinutes} suffix="minutes" onCommit={(v) => save({ ops: { backfillIntervalMinutes: v } })} />
+        </Row>
+        <Row label="Worker offline threshold" hint="The dashboard warns when no scheduler heartbeat arrives within this window.">
+          <Num min={2} max={60} value={s.ops.workerStaleMinutes} suffix="minutes" onCommit={(v) => save({ ops: { workerStaleMinutes: v } })} />
+        </Row>
+        <Row label="Slow job threshold" hint="Jobs exceeding this duration produce a warning with timing context.">
+          <Num min={10} max={280} value={s.ops.slowJobSeconds} suffix="seconds" onCommit={(v) => save({ ops: { slowJobSeconds: v } })} />
+        </Row>
+        <Row label="Maximum US quote age" hint="A buy is blocked when its execution reference quote is older than this.">
+          <Num min={30} max={3600} value={s.ops.maxUsQuoteAgeSeconds} suffix="seconds" onCommit={(v) => save({ ops: { maxUsQuoteAgeSeconds: v } })} />
+        </Row>
+        <Row label="Maximum UK quote age" hint="UK quotes are commonly delayed, so this normally needs a wider window than US quotes.">
+          <Num min={60} max={3600} value={s.ops.maxUkQuoteAgeSeconds} suffix="seconds" onCommit={(v) => save({ ops: { maxUkQuoteAgeSeconds: v } })} />
+        </Row>
+        <Row label="Critical slippage alert" hint="Warn when a broker fill is this much worse than the quote used for sizing.">
+          <Num min={0.05} max={10} step={0.05} value={s.ops.maxSlippagePct} suffix="%" onCommit={(v) => save({ ops: { maxSlippagePct: v } })} />
+        </Row>
+        <Row label="Log successful jobs" hint="Adds a line for every completed job. Leave off for quieter long-term operation; job timings are still recorded.">
+          <Toggle on={s.ops.verboseLogging} onChange={(v) => save({ ops: { verboseLogging: v } })} label="Verbose successful job logging" />
         </Row>
       </section>
 

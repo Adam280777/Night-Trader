@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Activity, Brain, History, LayoutDashboard, LogOut, MessageCircle, Radio, Settings, SlidersHorizontal } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { Activity, Brain, History, LayoutDashboard, LogOut, MessageCircle, Radio, ScrollText, Settings, SlidersHorizontal, Wrench } from "lucide-react";
 
 const ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/activity", label: "Live activity", icon: Radio },
+  { href: "/logs", label: "Logs", icon: ScrollText },
+  { href: "/system", label: "System health", icon: Wrench },
   { href: "/history", label: "History", icon: History },
   { href: "/learning", label: "Learning", icon: Brain },
   { href: "/chat", label: "Ask the model", icon: MessageCircle },
@@ -16,6 +18,7 @@ const ITEMS = [
 
 export function Nav() {
   const path = usePathname();
+  const router = useRouter();
   if (path === "/login") return null;
   return (
     <nav className="border-b border-border bg-surface md:sticky md:top-0 md:h-screen md:w-56 md:shrink-0 md:border-r md:border-b-0">
@@ -45,7 +48,8 @@ export function Nav() {
       <button
         onClick={async () => {
           await fetch("/api/auth/logout", { method: "POST" });
-          window.location.href = "/login";
+          router.push("/login");
+          router.refresh();
         }}
         className="mx-3 mt-2 mb-3 flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-fg md:absolute md:bottom-2 md:left-0 md:mx-3"
       >

@@ -1,11 +1,11 @@
 import { desc, eq } from "drizzle-orm";
 import { getDb, schema } from "../lib/db";
-import { getSettings } from "../lib/config";
 import { log } from "../lib/log";
+import { getSettings } from "../lib/config";
 import { tryClient } from "../lib/account";
 import { fxRate, getQuotes } from "../lib/market/data";
 import { quantityFor, unitCostInAccountCcy } from "../lib/risk/sizing";
-import { submitMarketOrder, waitForOrder } from "../lib/t212/safeOrder";
+import { adverseSlippagePct, findHistorical, submitMarketOrder, waitForOrder } from "../lib/t212/safeOrder";
 import { checkDecisionGuardrails } from "./guard";
 import { setRunStatus } from "./pipeline";
 
@@ -42,6 +42,19 @@ export async function executeBuy(runId: number): Promise<void> {
     if (!yahoo) throw new Error("Missing Yahoo symbol for candidate");
     const quote = (await getQuotes([yahoo])).get(yahoo);
     if (!quote) throw new Error(`No live quote for ${yahoo}`);
+    if (quote.quoteAt == null) {
+      setRunStatus(runId, "blocked", "Execution quote had no timestamp, so freshness could not be verified.");
+      await log("warn", "execute", `Blocked ${d.ticker}: Yahoo quote had no market timestamp.`, runId);
+      return;
+    }
+    const quoteAgeMs = Math.max(0, Date.now() - quote.quoteAt);
+    const settings = await getSettings();
+    const maxAgeSeconds = run.market === "UK" ? settings.ops.maxUkQuoteAgeSeconds : settings.ops.maxUsQuoteAgeSeconds;
+    if (quoteAgeMs > maxAgeSeconds * 1000) {
+      setRunStatus(runId, "blocked", `Execution quote was ${Math.round(quoteAgeMs / 1000)}s old (maximum ${maxAgeSeconds}s).`);
+      await log("warn", "execute", `Blocked ${d.ticker}: quote age ${Math.round(quoteAgeMs / 1000)}s exceeded ${maxAgeSeconds}s.`, runId, { quoteAt: quote.quoteAt, quoteAgeMs, maxAgeSeconds });
+      return;
+    }
 
     const fx = await fxRate(instrument.currencyCode, account.currency);
     const unit = unitCostInAccountCcy(quote.price, instrument.currencyCode, fx);
@@ -59,7 +72,19 @@ export async function executeBuy(runId: number): Promise<void> {
     if (run.mode !== "dry") {
       const client = await tryClient();
       if (!client) throw new Error("No T212 client");
-      const sub = await submitMarketOrder({ client, side: "BUY", ticker: d.ticker, quantity: qty, runId, decisionId: d.id });
+      const sub = await submitMarketOrder({
+        client,
+        side: "BUY",
+        ticker: d.ticker,
+        quantity: qty,
+        runId,
+        decisionId: d.id,
+        referencePrice: quote.price,
+        referenceAt: quote.quoteAt,
+        referenceSource: "yahoo",
+        quoteAgeMs,
+        spreadPct: quote.spreadPct,
+      });
       if (sub.status !== "sent" || !sub.t212OrderId) {
         setRunStatus(runId, sub.status === "unknown" ? "failed" : "blocked", `Buy order ${sub.status}`);
         return;
@@ -82,9 +107,24 @@ export async function executeBuy(runId: number): Promise<void> {
       } else {
         filledQty = done.filledQuantity ?? qty;
       }
-      await db.update(orders).set({ status: "filled", filledQuantity: filledQty }).where(eq(orders.id, sub.orderRowId)).run();
-      const pos = (await client.getPositions(d.ticker)).find((p) => p.instrument.ticker === d.ticker);
-      if (pos) entryPrice = pos.averagePricePaid;
+      const historical = await findHistorical(client, sub.t212OrderId).catch(() => null);
+      if (historical?.fill?.price) {
+        entryPrice = historical.fill.price;
+      } else {
+        const pos = (await client.getPositions(d.ticker)).find((p) => p.instrument.ticker === d.ticker);
+        if (pos) entryPrice = pos.averagePricePaid;
+      }
+      const slippagePct = adverseSlippagePct("BUY", quote.price, entryPrice);
+      await db.update(orders).set({ status: done?.status === "FILLED" ? "filled" : "partial", filledQuantity: filledQty, fillPrice: entryPrice, slippagePct }).where(eq(orders.id, sub.orderRowId)).run();
+      const maxSlippagePct = settings.ops.maxSlippagePct;
+      if (slippagePct > maxSlippagePct) {
+        await log("error", "execute", `Adverse buy slippage ${slippagePct.toFixed(2)}% exceeded the ${maxSlippagePct.toFixed(2)}% alert threshold.`, runId, {
+          referencePrice: quote.price,
+          fillPrice: entryPrice,
+          slippagePct,
+          spreadPct: quote.spreadPct,
+        });
+      }
     }
 
     await db.insert(trades)

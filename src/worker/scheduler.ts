@@ -4,6 +4,8 @@ import { currentMode, getSettings } from "../lib/config";
 import { log } from "../lib/log";
 import { getKv, setKv } from "../lib/kv";
 import { withLock } from "../lib/locks";
+import { pruneOperationalData } from "../lib/retention";
+import { traced } from "../lib/trace";
 import { getAccountState, tryClient } from "../lib/account";
 import { currentOrNextSession, nextSessionAfter, minutes } from "../lib/market/calendar";
 import { getMarketSessions, tradingDateOf } from "../lib/market/sessions";
@@ -14,6 +16,7 @@ import { executeExit } from "./exit";
 import { scoreOutcomes } from "./outcomes";
 import { runLearningCycle } from "../lib/quant/learn";
 import { studyRound } from "./study";
+import { backfillRound } from "./backfill";
 
 const { runs, decisions, trades, equitySnapshots, orders, candidates } = schema;
 
@@ -108,28 +111,43 @@ async function recover(nowMs: number): Promise<void> {
   }
 }
 
-/** Create today's run for a market once we are inside its research window. */
-async function ensureRun(market: Market, deps: SchedulerDeps): Promise<void> {
+export interface EnsureStatus {
+  text: string;
+  /** True when a run would normally be created but something is stopping it. */
+  notable?: boolean;
+}
+
+const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16) + "Z";
+
+/** Create today's run for a market once we are inside its research window. Always says why it did or did not. */
+async function ensureRun(market: Market, deps: SchedulerDeps): Promise<EnsureStatus> {
   const settings = await getSettings();
-  if (!settings.markets[market] || settings.killSwitch) return;
+  if (!settings.markets[market]) return { text: `${market} is switched off in Settings` };
+  if (settings.killSwitch) return { text: "Kill switch is on" };
   const client = await tryClient();
-  if (!client) return;
+  if (!client) return { text: "No Trading 212 credentials" };
   const now = deps.now();
   const db = getDb();
 
-  // One position at a time: never open a second run while a trade is open.
-  const [openTrade] = await db.select({ id: trades.id }).from(trades).where(eq(trades.status, "open")).limit(1);
-  if (openTrade) return;
-
   const session = currentOrNextSession(await getMarketSessions(client, market), now);
-  if (!session || now < session.open) return;
+  if (!session) return { text: "No upcoming session in the Trading 212 schedule", notable: true };
   const start = session.close.getTime() - minutes(settings.minutesBeforeCloseToResearch);
   const end = session.close.getTime() - minutes(settings.minutesBeforeCloseToBuy + 2);
-  if (now.getTime() < start || now.getTime() >= end) return;
+  if (now < session.open) return { text: `Market opens ${hhmm(session.open.getTime())}; run window ${hhmm(start)}-${hhmm(end)}` };
+  if (now.getTime() < start) return { text: `Run window opens ${hhmm(start)}` };
+  if (now.getTime() >= end) return { text: `Run window closed at ${hhmm(end)}` };
+
+  // One position at a time: never open a second run while a trade is open.
+  const [openTrade] = await db.select({ id: trades.id }).from(trades).where(eq(trades.status, "open")).limit(1);
+  if (openTrade) return { text: "A position is still open; one trade at a time", notable: true };
 
   const tradingDate = tradingDateOf(market, session.close);
-  const [existing] = await db.select({ id: runs.id }).from(runs).where(and(eq(runs.tradingDate, tradingDate), eq(runs.market, market))).limit(1);
-  if (existing) return;
+  const [existing] = await db
+    .select({ id: runs.id, status: runs.status })
+    .from(runs)
+    .where(and(eq(runs.tradingDate, tradingDate), eq(runs.market, market)))
+    .limit(1);
+  if (existing) return { text: `Run #${existing.id} for ${tradingDate} is ${existing.status}` };
 
   // Cross-market rule: once one market has produced a trade today, don't start the other.
   const [sameDayTrade] = await db
@@ -137,7 +155,7 @@ async function ensureRun(market: Market, deps: SchedulerDeps): Promise<void> {
     .from(runs)
     .where(and(eq(runs.tradingDate, tradingDate), inArray(runs.status, ["holding", "exiting", "executing"])))
     .limit(1);
-  if (sameDayTrade) return;
+  if (sameDayTrade) return { text: `Run #${sameDayTrade.id} already holds a position for ${tradingDate}`, notable: true };
 
   const mode = await currentMode(settings);
   const [row] = await db
@@ -145,6 +163,14 @@ async function ensureRun(market: Market, deps: SchedulerDeps): Promise<void> {
     .values({ tradingDate, market, mode, status: "scheduled", sessionCloseAt: session.close })
     .returning({ id: runs.id });
   await log("info", "scheduler", `Created ${mode.toUpperCase()} run #${row.id} for ${market} ${tradingDate} (closes ${session.close.toISOString()})`, row.id);
+  return { text: `Created run #${row.id}` };
+}
+
+/** Remember the latest reason per market so the Activity page can answer "why is there no run?". */
+async function recordEnsure(market: Market, status: EnsureStatus, nowMs: number): Promise<void> {
+  const prev = await getKv<{ text: string; at: number }>(`ensure:${market}`);
+  if (prev && prev.value.text === status.text && nowMs - prev.value.at < 10 * 60_000) return;
+  await setKv(`ensure:${market}`, { text: status.text, at: nowMs });
 }
 
 async function processRun(run: typeof runs.$inferSelect, deps: SchedulerDeps, startedAt: number): Promise<void> {
@@ -215,13 +241,17 @@ export async function tick(deps: SchedulerDeps = realClock): Promise<TickResult>
   const got = await withLock("tick", TICK_BUDGET_MS + 60_000, async () => {
     const db = getDb();
     const nowMs = deps.now().getTime();
+    const settings = await getSettings();
+    const traceOptions = { slowMs: settings.ops.slowJobSeconds * 1000, verbose: settings.ops.verboseLogging };
     await db.insert(schema.settings).values({ key: "_heartbeat", value: nowMs }).onConflictDoUpdate({ target: schema.settings.key, set: { value: nowMs } });
 
     await recover(nowMs);
 
     for (const m of MARKETS) {
       try {
-        await ensureRun(m, deps);
+        const status = await ensureRun(m, deps);
+        await recordEnsure(m, status, nowMs);
+        if (status.notable) await warnOnce(`ensure:${m}:${status.text}`, `No ${m} run was created: ${status.text}.`, undefined, nowMs);
       } catch (err) {
         await warnOnce(`ensure:${m}`, `Could not check ${m} schedule: ${String(err).slice(0, 200)}`, undefined, nowMs);
       }
@@ -240,13 +270,38 @@ export async function tick(deps: SchedulerDeps = realClock): Promise<TickResult>
 
     if (Date.now() - startedAt < TICK_BUDGET_MS - 60_000) {
       try {
-        if (await every("equity", 15 * 60_000, nowMs)) await snapshotEquity(deps);
-        if (await every("outcomes", 60 * 60_000, nowMs)) await scoreOutcomes();
+        if (await every("equity", minutes(settings.ops.equitySnapshotMinutes), nowMs)) {
+          await traced("equity-snapshot", () => snapshotEquity(deps), traceOptions);
+        }
         // Learning does not depend on having traded: every shortlisted name that gets scored is a
-        // labelled example, so the model keeps improving through NO_TRADE days too.
-        if (await every("learning", 6 * 3_600_000, nowMs)) {
-          const { trained, activeRules } = await runLearningCycle();
-          if (trained > 0) await log("info", "learning", `Trained on ${trained} new outcome(s); ${activeRules} rule(s) active.`);
+        // labelled example, so the model keeps improving through NO_TRADE days too. It trains as soon
+        // as new outcomes land, with the timer as a backstop for rules that depend on elapsed time.
+        let newOutcomes = 0;
+        if (await every("outcomes", minutes(settings.ops.outcomesIntervalMinutes), nowMs)) {
+          const outcomeResult = await traced("score-outcomes", () => scoreOutcomes(), {
+            ...traceOptions,
+            detail: (scored) => ({ scored }),
+            summary: (scored) => `${scored} candidate(s) scored`,
+          });
+          if (outcomeResult.ok) newOutcomes = outcomeResult.value;
+        }
+        if (newOutcomes > 0 || (await every("learning", settings.ops.learningIntervalHours * 3_600_000, nowMs))) {
+          const learningResult = await traced("learning-cycle", () => runLearningCycle(), {
+            ...traceOptions,
+            detail: (value) => ({ trained: value.trained, activeRules: value.activeRules }),
+            summary: (value) => `${value.trained} outcome(s), ${value.activeRules} active rule(s)`,
+          });
+          if (learningResult.ok && learningResult.value.trained > 0) {
+            const { trained, activeRules } = learningResult.value;
+            await log("info", "learning", `Trained on ${trained} new outcome(s); ${activeRules} rule(s) active.`);
+          }
+        }
+        if (await every("retention", 12 * 3_600_000, nowMs)) {
+          await traced("retention", () => pruneOperationalData(settings.ops, nowMs), {
+            ...traceOptions,
+            detail: (value) => ({ logs: value.logs, jobs: value.jobs, equity: value.equity, kv: value.kv }),
+            summary: (value) => `${value.logs + value.jobs + value.equity + value.kv} row(s) pruned`,
+          });
         }
       } catch (err) {
         await warnOnce("housekeeping", `Housekeeping failed: ${String(err).slice(0, 200)}`, undefined, nowMs);
@@ -259,13 +314,42 @@ export async function tick(deps: SchedulerDeps = realClock): Promise<TickResult>
     const studyDeadline = startedAt + STUDY_CUTOFF_MS;
     if (active.length === 0 && Date.now() < studyDeadline - 30_000) {
       try {
-        const settings = await getSettings();
         if (await every("study", minutes(settings.quant.studyIntervalMinutes), nowMs)) {
-          const r = await studyRound(studyDeadline);
-          if (r.ran) studied = r.scanned;
+          const studyResult = await traced("study-round", () => studyRound(studyDeadline), {
+            ...traceOptions,
+            record: (value) => value.ran,
+            detail: (value) => ({
+              ran: value.ran,
+              skipped: value.skipped,
+              market: value.market,
+              scanned: value.scanned,
+              scored: value.scored,
+              researched: value.researched,
+              skippedKnown: value.skippedKnown,
+            }),
+            summary: (value) => value.ran ? `${value.scanned} symbol(s) scanned` : value.skipped ?? "idle",
+          });
+          if (studyResult.ok && studyResult.value.ran) studied = studyResult.value.scanned;
         }
       } catch (err) {
         await warnOnce("study", `Study round failed: ${String(err).slice(0, 200)}`, undefined, nowMs);
+      }
+    }
+
+    // Then replay history into the model with whatever time is still left. The time check comes
+    // first because `every` starts its timer the moment it says yes.
+    if (active.length === 0 && Date.now() < studyDeadline - 40_000) {
+      try {
+        if (await every("backfill", minutes(settings.ops.backfillIntervalMinutes), nowMs)) {
+          await traced("backfill-round", () => backfillRound(studyDeadline), {
+            ...traceOptions,
+            record: (value) => value.ran,
+            detail: (value) => ({ ran: value.ran, skipped: value.skipped, symbols: value.symbols, nights: value.nights }),
+            summary: (value) => value.ran ? `${value.symbols} symbol(s), ${value.nights} night(s)` : value.skipped ?? "idle",
+          });
+        }
+      } catch (err) {
+        await warnOnce("backfill", `Backfill round failed: ${String(err).slice(0, 200)}`, undefined, nowMs);
       }
     }
     result = { ran: true, activeRuns: active.length, studied };

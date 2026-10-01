@@ -167,13 +167,25 @@ export interface TrainingSample {
   weight?: number;
 }
 
+export interface TrainOptions {
+  /**
+   * Features this batch cannot supply honestly (replayed history has no headlines or market context).
+   * They are left out of the standardisation statistics and their coefficients are not touched, so
+   * a batch of neutral placeholders cannot teach the model that those features never vary.
+   */
+  frozen?: ReadonlySet<string>;
+  /** Record this batch in the reliability curve. Off for replayed history, which is not live-comparable. */
+  calibrate?: boolean;
+}
+
 /**
  * One pass of regularised online gradient descent. Returns a new state; the caller persists it.
  * Samples should be passed in chronological order.
  */
-export function train(state: ModelState, samples: TrainingSample[], tuning: QuantTuning = DEFAULT_TUNING): ModelState {
+export function train(state: ModelState, samples: TrainingSample[], tuning: QuantTuning = DEFAULT_TUNING, opts: TrainOptions = {}): ModelState {
   if (samples.length === 0) return state;
   const { ridge: RIDGE, learningRate: LEARNING_RATE, trainingPasses: passes } = tuning;
+  const frozen = opts.frozen ?? new Set<string>();
   const next: ModelState = {
     ...state,
     weights: { ...state.weights },
@@ -185,18 +197,19 @@ export function train(state: ModelState, samples: TrainingSample[], tuning: Quan
 
   // Update standardisation first so this batch is scored on comparable units.
   for (const s of samples) {
-    for (const key of FEATURE_KEYS) next.stats[key] = pushStat(next.stats[key], s.features[key] ?? 0);
+    for (const key of FEATURE_KEYS) if (!frozen.has(key)) next.stats[key] = pushStat(next.stats[key], s.features[key] ?? 0);
   }
 
   for (let pass = 0; pass < passes; pass++) {
     for (const s of samples) {
       const w = clamp(s.weight ?? 1, 0, 3);
-      const zs = FEATURE_KEYS.map((k) => z(next, k, s.features[k] ?? 0));
+      const zs = FEATURE_KEYS.map((k) => (frozen.has(k) ? 0 : z(next, k, s.features[k] ?? 0)));
       let logOdds = next.bias;
       for (const [i, k] of FEATURE_KEYS.entries()) logOdds += (next.weights[k] ?? 0) * zs[i];
       const error = sigmoid(logOdds) - (s.label ? 1 : 0);
 
       for (const [i, k] of FEATURE_KEYS.entries()) {
+        if (frozen.has(k)) continue;
         // Ridge pulls toward the prior coefficient rather than toward zero.
         const grad = w * error * zs[i] + RIDGE * ((next.weights[k] ?? 0) - priors[k]);
         next.grad2[k] = (next.grad2[k] ?? 0) + grad * grad;
@@ -209,14 +222,16 @@ export function train(state: ModelState, samples: TrainingSample[], tuning: Quan
   }
 
   // Calibration is measured against the freshly updated coefficients.
-  for (const s of samples) {
-    let logOdds = next.bias;
-    for (const k of FEATURE_KEYS) logOdds += (next.weights[k] ?? 0) * z(next, k, s.features[k] ?? 0);
-    const raw = sigmoid(logOdds);
-    const bin = next.calibration[binOf(raw)];
-    bin.n += 1;
-    bin.sum += raw;
-    if (s.label) bin.wins += 1;
+  if (opts.calibrate !== false) {
+    for (const s of samples) {
+      let logOdds = next.bias;
+      for (const k of FEATURE_KEYS) logOdds += (next.weights[k] ?? 0) * z(next, k, s.features[k] ?? 0);
+      const raw = sigmoid(logOdds);
+      const bin = next.calibration[binOf(raw)];
+      bin.n += 1;
+      bin.sum += raw;
+      if (s.label) bin.wins += 1;
+    }
   }
 
   next.samples += samples.length;

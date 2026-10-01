@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb, schema } from "../lib/db";
 import { log } from "../lib/log";
 import { roundTripCostPct } from "../lib/quant/costs";
@@ -19,6 +19,15 @@ export async function finalizeTrade(tradeId: number): Promise<void> {
     await scoreOutcomes(t.runId);
     const d = (await db.select().from(decisions).where(eq(decisions.id, t.decisionId)).get())!;
     const run = (await db.select().from(runs).where(eq(runs.id, t.runId)).get())!;
+
+    // The traded name's label should be what the broker actually filled, not the Yahoo open it is a proxy for.
+    if (run.mode !== "dry" && t.entryPrice && t.exitPrice && t.entryPrice > 0 && t.exitPrice > 0) {
+      await db
+        .update(candidates)
+        .set({ overnightReturnPct: (t.exitPrice / t.entryPrice - 1) * 100 })
+        .where(and(eq(candidates.runId, t.runId), eq(candidates.ticker, t.ticker)))
+        .run();
+    }
     const outcomes = await db.select().from(candidates).where(eq(candidates.runId, t.runId)).all();
     const signals = (outcomes.find((o) => o.ticker === t.ticker)?.signals ?? null) as Record<string, number> | null;
 

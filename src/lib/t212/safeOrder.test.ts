@@ -41,6 +41,13 @@ function fakeClient(over: Partial<Record<keyof T212Client, unknown>>): { client:
 }
 
 describe("submitMarketOrder", () => {
+  it("measures adverse slippage consistently for buys and sells", async () => {
+    const { adverseSlippagePct } = await import("./safeOrder");
+    expect(adverseSlippagePct("BUY", 100, 101)).toBeCloseTo(1, 6);
+    expect(adverseSlippagePct("SELL", 100, 99)).toBeCloseTo(1.010101, 6);
+    expect(adverseSlippagePct("BUY", 100, 99)).toBeLessThan(0);
+  });
+
   it("records the intent, sends once, and marks the order sent", async () => {
     const { db, schema, submitMarketOrder, runId } = await setup();
     const { client, place } = fakeClient({ placeMarketOrder: vi.fn(async () => ({ id: 111, status: "NEW" })) });

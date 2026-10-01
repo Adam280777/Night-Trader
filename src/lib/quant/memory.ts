@@ -66,17 +66,12 @@ export async function getPerformanceStats(): Promise<PerfStats> {
     avgWinPct: avg(wins),
     avgLossPct: avg(losses),
     totalPnl: rows.reduce((s, r) => s + (r.pnl ?? 0), 0),
-    byConfidence: group((r) => bucket(r.confidence)).map((g) => ({ bucket: g.key, ...omitKey(g) })),
-    byMarket: group((r) => r.market).map((g) => ({ market: g.key, ...omitKey(g) })),
+    byConfidence: group((r) => bucket(r.confidence)).map((g) => ({ bucket: g.key, n: g.n, winRate: g.winRate, avgPnlPct: g.avgPnlPct })),
+    byMarket: group((r) => r.market).map((g) => ({ market: g.key, n: g.n, winRate: g.winRate, avgPnlPct: g.avgPnlPct })),
     shortlistAvgOvernightPct: avg(cand.map((c) => c.r!)),
     pickedAvgOvernightPct: avg(cand.filter((c) => c.picked).map((c) => c.r!)),
     recent: rows.slice(0, 10).map((r) => ({ date: r.date, ticker: r.ticker, pnlPct: r.pnlPct, confidence: r.confidence })),
   };
-}
-
-function omitKey<T extends { key: string }>(g: T) {
-  const { key: _k, ...rest } = g;
-  return rest;
 }
 
 /** Newest active lessons first. With few lessons we include all; the meta-review job keeps the set small. */

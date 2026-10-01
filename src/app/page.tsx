@@ -3,8 +3,10 @@ import { Check } from "lucide-react";
 import { Badge, Card, Empty, Notice, PageHeader, Stat } from "@/components/ui";
 import { ApprovalButtons, AutoRefresh, KillSwitch, ResolveOrderButton } from "@/components/controls";
 import { EquityChart } from "@/components/charts";
+import { CalendarHeatmap } from "@/components/viz/CalendarHeatmap";
+import { Donut } from "@/components/viz/Donut";
 import { STATUS, money, pct, tone, when } from "@/lib/format";
-import { getAccountSafe, getEnvStatus, getEquitySeries, getFeaturedRun, getOpenTrade, getPnlWindows, getRecentEvents, getUnknownOrders, getWorkerStatus } from "@/lib/queries";
+import { getAccountSafe, getDashboardInsights, getEnvStatus, getEquitySeries, getFeaturedRun, getOpenTrade, getPnlWindows, getRecentEvents, getUnknownOrders, getWorkerStatus } from "@/lib/queries";
 import { currentMode, getSettings } from "@/lib/config";
 import { getPerformanceStats } from "@/lib/quant/memory";
 export const dynamic = "force-dynamic";
@@ -38,9 +40,9 @@ function Timeline({ status }: { status: string }) {
 
 export default async function Dashboard() {
   const settings = await getSettings();
-  const [env, worker, acctRes, featured, open, unknown, stats, events, equityRows, mode] = await Promise.all([
+  const [env, worker, acctRes, featured, open, unknown, stats, events, equityRows, mode, insights] = await Promise.all([
     getEnvStatus(),
-    getWorkerStatus(),
+    getWorkerStatus(settings.ops.workerStaleMinutes),
     getAccountSafe(),
     getFeaturedRun(),
     getOpenTrade(),
@@ -49,6 +51,7 @@ export default async function Dashboard() {
     getRecentEvents(12),
     getEquitySeries(),
     currentMode(settings),
+    getDashboardInsights(),
   ]);
   const { account, error: acctError } = acctRes;
   const equity = equityRows.map((e) => ({ ts: e.ts.getTime(), value: e.totalValue }));
@@ -107,7 +110,7 @@ export default async function Dashboard() {
               {decision && decision.action === "BUY" && (
                 <div className="rounded-lg bg-surface-2 p-4">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <div className="text-lg font-semibold">{decision.name ?? decision.ticker} <span className="font-mono text-sm text-muted">{decision.ticker}</span></div>
+                    <div className="text-lg font-semibold">{decision.name ?? decision.ticker} <span className="font-mono text-sm text-muted">{decision.ticker}</span>{decision.forced && <span className="ml-2 rounded-full bg-surface px-2 py-0.5 align-middle text-xs font-medium text-muted">demo exploration</span>}</div>
                     <div className="tabular text-sm text-muted">
                       Confidence {Math.round((decision.confidence ?? 0) * 100)}% · expects {pct(decision.expectedMovePct)} overnight
                     </div>
@@ -143,7 +146,25 @@ export default async function Dashboard() {
         </Card>
       </div>
 
-      <Card className="mt-4" title="Account value"><EquityChart data={equity} currency={ccy} /></Card>
+      <div className="mt-4 grid gap-4 xl:grid-cols-3">
+        <Card className="xl:col-span-2" title="Account value"><EquityChart data={equity} currency={ccy} /></Card>
+        <Card title="Run outcomes" action={<span className="text-xs text-muted">{insights.totalRuns} recent</span>}>
+          <Donut
+            segments={insights.statuses.map((item) => ({
+              ...item,
+              tone: item.label === "closed" ? "good" : item.label === "failed" || item.label === "blocked" ? "bad" : item.label === "no trade" || item.label === "skipped" ? "neutral" : "info",
+            }))}
+            centre={insights.totalRuns}
+            centreLabel="runs"
+            size={128}
+            ariaLabel="Recent run outcomes"
+          />
+        </Card>
+      </div>
+
+      <Card className="mt-4" title="Daily realised return">
+        <CalendarHeatmap days={insights.returns} format={(value) => pct(value)} ariaLabel="Realised trading returns by day" />
+      </Card>
 
       <Card className="mt-4" title="Activity log">
         {events.length === 0 ? (

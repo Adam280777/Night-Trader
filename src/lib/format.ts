@@ -14,7 +14,15 @@ export function pct(v: number | null | undefined, digits = 2, signed = true): st
 
 export function when(d: Date | number | null | undefined): string {
   if (d == null) return "n/a";
-  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(d);
+  // Pinned to London so server-rendered pages (UTC) and the browser agree, and the zone is stated.
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/London",
+    timeZoneName: "short",
+  }).format(d);
 }
 
 export function tone(v: number | null | undefined): "good" | "bad" | "neutral" {

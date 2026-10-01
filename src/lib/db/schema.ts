@@ -70,6 +70,8 @@ export const decisions = sqliteTable("decisions", {
     .default("not_required"),
   approvalDeadline: integer("approval_deadline", { mode: "timestamp_ms" }),
   marketContext: text("market_context", { mode: "json" }),
+  /** True for a demo exploration trade the engine would otherwise have passed on. */
+  forced: integer("forced", { mode: "boolean" }).notNull().default(false),
   createdAt: createdAt(),
 });
 
@@ -116,6 +118,12 @@ export const orders = sqliteTable(
     t212OrderId: text("t212_order_id"),
     filledQuantity: real("filled_quantity"),
     fillPrice: real("fill_price"),
+    referencePrice: real("reference_price"),
+    referenceAt: integer("reference_at", { mode: "timestamp_ms" }),
+    referenceSource: text("reference_source"),
+    quoteAgeMs: integer("quote_age_ms"),
+    spreadPct: real("spread_pct"),
+    slippagePct: real("slippage_pct"),
     error: text("error"),
     raw: text("raw", { mode: "json" }),
     createdAt: createdAt(),
@@ -195,14 +203,35 @@ export const equitySnapshots = sqliteTable("equity_snapshots", {
   mode: text("mode").notNull(),
 });
 
-export const eventLog = sqliteTable("event_log", {
-  id: id(),
-  ts: createdAt(),
-  level: text("level", { enum: ["info", "warn", "error"] }).notNull(),
-  source: text("source").notNull(),
-  message: text("message").notNull(),
-  runId: integer("run_id"),
-});
+export const eventLog = sqliteTable(
+  "event_log",
+  {
+    id: id(),
+    ts: createdAt(),
+    level: text("level", { enum: ["info", "warn", "error"] }).notNull(),
+    source: text("source").notNull(),
+    message: text("message").notNull(),
+    runId: integer("run_id"),
+    /** Structured context (error stack, counts, timings) for debugging; never secrets. */
+    detail: text("detail", { mode: "json" }),
+  },
+  (t) => [index("event_log_ts").on(t.ts)],
+);
+
+/** One row per background job execution (tick, study, backfill, ...), for the System page and duration/failure trends. */
+export const jobRuns = sqliteTable(
+  "job_runs",
+  {
+    id: id(),
+    job: text("job").notNull(),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+    durationMs: integer("duration_ms").notNull(),
+    ok: integer("ok", { mode: "boolean" }).notNull(),
+    error: text("error"),
+    detail: text("detail", { mode: "json" }),
+  },
+  (t) => [index("job_runs_job_started").on(t.job, t.startedAt)],
+);
 
 /**
  * What the model has learned about individual symbols by studying them continuously, rather than
@@ -231,12 +260,29 @@ export const knowledge = sqliteTable(
     overnightRisk: text("overnight_risk"),
     /** When research was last refreshed; null means signals only so far. */
     researchedAt: integer("researched_at", { mode: "timestamp_ms" }),
+    /** When this symbol's price history was replayed into the model; null until it has been. */
+    backfilledAt: integer("backfilled_at", { mode: "timestamp_ms" }),
     firstSeenAt: createdAt(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" })
       .notNull()
       .$defaultFn(() => new Date()),
   },
   (t) => [index("knowledge_market_score").on(t.market, t.screenScore), index("knowledge_updated").on(t.updatedAt)],
+);
+
+/**
+ * Symbols the study rotation found it cannot use (no quote, too illiquid, too little history), so
+ * the next lap skips them until `until` instead of paying a quote lookup to rediscover that.
+ */
+export const studySkips = sqliteTable(
+  "study_skips",
+  {
+    symbol: text("symbol").primaryKey(),
+    market: text("market", { enum: ["US", "UK"] }).notNull(),
+    reason: text("reason").notNull(),
+    until: integer("until", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [index("study_skips_until").on(t.until)],
 );
 
 export const chatMessages = sqliteTable("chat_messages", {

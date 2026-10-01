@@ -1,6 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { getDb, schema } from "../lib/db";
 import { log } from "../lib/log";
+import { getSettings } from "../lib/config";
 import { tryClient } from "../lib/account";
 import { estimatedRoundTripCostPct } from "../lib/risk/guardrails";
 import { fxRate, getDailyBars } from "../lib/market/data";
@@ -55,7 +56,7 @@ async function exitDry(run: Run, trade: Trade) {
 
   const entry = trade.entryPrice ?? next.open;
   const gross = (next.open / entry - 1) * 100;
-  const net = gross - estimatedRoundTripCostPct(run.market);
+  const net = gross - estimatedRoundTripCostPct(run.market, (await getSettings()).quant);
   const { fx, instCcy } = await accountFx(trade.ticker);
   const invested = trade.quantity * unitCostInAccountCcy(entry, instCcy, fx);
 
@@ -86,7 +87,18 @@ async function exitReal(run: Run, trade: Trade) {
       setRunStatus(run.id, "closed", "Position not found at exit");
       return;
     }
-    const sub = await submitMarketOrder({ client, side: "SELL", ticker: trade.ticker, quantity: pos.quantityAvailableForTrading, runId: run.id, decisionId: trade.decisionId });
+    const sub = await submitMarketOrder({
+      client,
+      side: "SELL",
+      ticker: trade.ticker,
+      quantity: pos.quantityAvailableForTrading,
+      runId: run.id,
+      decisionId: trade.decisionId,
+      referencePrice: pos.currentPrice,
+      referenceAt: Date.now(),
+      referenceSource: "broker_preopen",
+      quoteAgeMs: 0,
+    });
     if (sub.status !== "sent") return;
     setRunStatus(run.id, "exiting");
     return;
@@ -104,6 +116,7 @@ async function exitReal(run: Run, trade: Trade) {
   await db.update(orders).set({ status: "filled", filledQuantity: done.filledQuantity ?? null, updatedAt: new Date() }).where(eq(orders.id, last.id)).run();
   const hist = await findHistorical(client, done.id);
   const exitPrice = hist?.fill?.price ?? null;
+  await db.update(orders).set({ fillPrice: exitPrice, updatedAt: new Date() }).where(eq(orders.id, last.id)).run();
   const entry = trade.entryPrice;
   const pnlPct = exitPrice && entry ? (exitPrice / entry - 1) * 100 : null;
   const pnl = hist?.fill?.walletImpact?.realisedProfitLoss ?? null;

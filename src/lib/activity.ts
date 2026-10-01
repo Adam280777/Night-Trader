@@ -8,6 +8,7 @@
 import { desc, eq, notInArray } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import { getSettings } from "./config";
+import { getKv } from "./kv";
 import { knowledgeStats, recentlyStudied } from "./quant/knowledge";
 
 const { runs, candidates, eventLog, settings: settingsTable } = schema;
@@ -70,6 +71,8 @@ export interface ActivityFeedData {
     sessionCloseAt: number | null;
     updatedAt: number;
   } | null;
+  /** Why each enabled market does or does not have a run right now. */
+  scheduling: { market: string; text: string; at: number }[];
   shortlist: { ticker: string; name: string | null; score: number | null; picked: boolean; state: "queued" | "researched" | "failed" }[];
   knowledge: { symbols: number; researched: number; studiedLastHour: number; lastStudiedAt: number | null; recent: StudiedSymbol[] };
   events: ActivityEvent[];
@@ -102,6 +105,12 @@ export async function getActivityFeed(): Promise<ActivityFeedData> {
   const stats = await knowledgeStats();
   const studied = await recentlyStudied(14);
 
+  const scheduling: ActivityFeedData["scheduling"] = [];
+  for (const m of ["US", "UK"] as const) {
+    const k = await getKv<{ text: string; at: number }>(`ensure:${m}`);
+    if (k) scheduling.push({ market: m, text: k.value.text, at: k.value.at });
+  }
+
   return {
     now: Date.now(),
     heartbeatAt: typeof heartbeat?.value === "number" ? heartbeat.value : null,
@@ -122,6 +131,7 @@ export async function getActivityFeed(): Promise<ActivityFeedData> {
           updatedAt: run.updatedAt.getTime(),
         }
       : null,
+    scheduling,
     shortlist: shortlist.map((c) => ({
       ticker: c.ticker,
       name: c.name,

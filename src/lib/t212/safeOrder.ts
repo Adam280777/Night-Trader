@@ -13,6 +13,16 @@ export interface SubmitArgs {
   quantity: number;
   runId: number;
   decisionId: number | null;
+  referencePrice?: number;
+  referenceAt?: number;
+  referenceSource?: "yahoo" | "broker_preopen";
+  quoteAgeMs?: number;
+  spreadPct?: number | null;
+}
+
+export function adverseSlippagePct(side: "BUY" | "SELL", referencePrice: number, fillPrice: number): number {
+  if (!(referencePrice > 0) || !(fillPrice > 0)) return 0;
+  return (side === "BUY" ? fillPrice / referencePrice - 1 : referencePrice / fillPrice - 1) * 100;
 }
 
 /**
@@ -26,7 +36,19 @@ export async function submitMarketOrder(a: SubmitArgs): Promise<{ orderRowId: nu
   const intentAt = Date.now();
   const [row] = await db
     .insert(schema.orders)
-    .values({ decisionId: a.decisionId, runId: a.runId, side: a.side, ticker: a.ticker, quantity: a.quantity, status: "intent" })
+    .values({
+      decisionId: a.decisionId,
+      runId: a.runId,
+      side: a.side,
+      ticker: a.ticker,
+      quantity: a.quantity,
+      status: "intent",
+      referencePrice: a.referencePrice,
+      referenceAt: a.referenceAt == null ? undefined : new Date(a.referenceAt),
+      referenceSource: a.referenceSource,
+      quoteAgeMs: a.quoteAgeMs,
+      spreadPct: a.spreadPct,
+    })
     .returning({ id: schema.orders.id });
 
   const signed = a.side === "BUY" ? a.quantity : -a.quantity;

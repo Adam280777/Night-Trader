@@ -72,6 +72,20 @@ export const FEATURES: FeatureDef[] = [
     display: (c) => `this weekday averaged ${pct(c.signals.gapWeekdayPct)} overnight`,
   },
   {
+    key: "gapLast",
+    label: "This morning's gap",
+    prior: 0,
+    extract: (c) => clamp(c.signals.gapLastPct ?? 0, -5, 5),
+    display: (c) => `opened ${pct(c.signals.gapLastPct ?? 0)} versus yesterday's close`,
+  },
+  {
+    key: "gapTail",
+    label: "Frequency of bad gaps",
+    prior: -0.3,
+    extract: (c) => clamp((c.signals.gapTailRate ?? 0) * 10, 0, 3),
+    display: (c) => `${Math.round((c.signals.gapTailRate ?? 0) * 100)}% of recent nights opened more than 2% lower`,
+  },
+  {
     key: "overnightShare",
     label: "Return earned overnight",
     prior: 0.4,
@@ -154,6 +168,57 @@ export const FEATURES: FeatureDef[] = [
     prior: 0.45,
     extract: (c) => clamp(c.research?.sentiment ?? 0, -1, 1),
     display: (c) => `headline sentiment ${(c.research?.sentiment ?? 0).toFixed(2)} across ${c.research?.headlines.length ?? 0} recent stories`,
+  },
+  {
+    key: "analystTilt",
+    label: "Analyst consensus",
+    prior: 0.08,
+    // 1 = strong buy, 3 = hold, 5 = sell; centred so a hold reads zero.
+    extract: (c) => (c.research?.fundamentals?.analystMean == null ? 0 : clamp((3 - c.research.fundamentals.analystMean) / 2, -1, 1)),
+    display: (c) => {
+      const f = c.research?.fundamentals;
+      return f?.analystMean == null ? "no analyst consensus available" : `analyst consensus ${f.analystMean.toFixed(1)} of 5 (1 is strong buy) from ${f.analystCount ?? "?"} analysts`;
+    },
+  },
+  {
+    key: "targetUpside",
+    label: "Distance to analyst target",
+    prior: 0.05,
+    extract: (c) => (c.research?.fundamentals?.targetUpsidePct == null ? 0 : clamp(c.research.fundamentals.targetUpsidePct / 30, -1.5, 1.5)),
+    display: (c) => {
+      const f = c.research?.fundamentals;
+      return f?.targetUpsidePct == null ? "no analyst price target available" : `the mean analyst target is ${pct(f.targetUpsidePct)} from the price`;
+    },
+  },
+  {
+    key: "analystRevisions",
+    label: "Recent rating changes",
+    prior: 0.2,
+    extract: (c) => clamp(c.research?.fundamentals?.netUpgrades14d ?? 0, -3, 3),
+    display: (c) => {
+      const n = c.research?.fundamentals?.netUpgrades14d;
+      return n == null ? "no rating-change data" : `${n >= 0 ? "+" : ""}${n} net analyst upgrades over 14 days`;
+    },
+  },
+  {
+    key: "shortInterest",
+    label: "Short interest",
+    prior: -0.1,
+    extract: (c) => clamp((c.research?.fundamentals?.shortPctFloat ?? 0) * 10, 0, 3),
+    display: (c) => {
+      const s = c.research?.fundamentals?.shortPctFloat;
+      return s == null ? "short interest unknown" : `${(s * 100).toFixed(1)}% of the float is sold short`;
+    },
+  },
+  {
+    key: "earningsSurprise",
+    label: "Earnings track record",
+    prior: 0.1,
+    extract: (c) => clamp((c.research?.fundamentals?.epsSurprisePct ?? 0) / 10, -2, 2),
+    display: (c) => {
+      const e = c.research?.fundamentals?.epsSurprisePct;
+      return e == null ? "no earnings history" : `earnings have beaten estimates by ${pct(e)} on average over four reports`;
+    },
   },
   {
     key: "newsBurst",

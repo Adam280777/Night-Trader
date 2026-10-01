@@ -113,6 +113,17 @@ export async function pruneKnowledge(retentionDays: number): Promise<number> {
   return rows.length;
 }
 
+/** Drop stored symbols of a market that are no longer in the tradable universe (e.g. ETFs after they were disallowed). */
+export async function purgeOutsideUniverse(market: Market, allowedTickers: Set<string>): Promise<number> {
+  const db = getDb();
+  const rows = await db.select({ symbol: knowledge.symbol, ticker: knowledge.ticker }).from(knowledge).where(eq(knowledge.market, market));
+  const stale = rows.filter((r) => !allowedTickers.has(r.ticker)).map((r) => r.symbol);
+  for (let i = 0; i < stale.length; i += 200) {
+    await db.delete(knowledge).where(inArray(knowledge.symbol, stale.slice(i, i + 200)));
+  }
+  return stale.length;
+}
+
 export interface KnowledgeStats {
   symbols: number;
   researched: number;

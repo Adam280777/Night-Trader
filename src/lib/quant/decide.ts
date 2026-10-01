@@ -44,6 +44,11 @@ export interface DecideInput {
   minEdgePct: number;
   /** Every tunable constant in the engine. Falls back to the shipped defaults. */
   tuning?: QuantTuning;
+  /**
+   * Demo exploration: when the confidence/edge/stake gates would pass, buy the best unflagged name
+   * anyway with this stake so the outcome becomes a real, fill-priced training example.
+   */
+  forceTrade?: { investPct: number };
 }
 
 export interface Evaluated {
@@ -201,34 +206,32 @@ export function decide(i: DecideInput): DecideOutput {
   const best = tradeable[0];
   const e = best.evaluation;
 
+  let gate: string | null = null;
   if (e.probability < i.minConfidence) {
-    return noTrade(
-      `The best candidate is only ${(e.probability * 100).toFixed(0)}% likely to clear costs, under the ${(i.minConfidence * 100).toFixed(0)}% minimum.`,
-      best,
-    );
-  }
-  if (e.riskAdjustedEdgePct <= 0) {
-    return noTrade(
-      `Its ${(e.edgePct >= 0 ? "" : "negative ")}edge of ${e.edgePct.toFixed(2)}% does not survive the ${(e.edgePct - e.riskAdjustedEdgePct).toFixed(2)}% charged for estimation uncertainty.`,
-      best,
-    );
-  }
-  if (e.edgePct < i.minEdgePct) {
-    return noTrade(`Its ${e.edgePct.toFixed(2)}% edge after costs is below the ${i.minEdgePct.toFixed(2)}% minimum.`, best);
-  }
-  if (e.kellyFraction < (i.tuning ?? DEFAULT_TUNING).minKellyFraction) {
-    return noTrade("The optimal stake rounds to nothing, so the edge is not worth the exposure.", best);
+    gate = `The best candidate is only ${(e.probability * 100).toFixed(0)}% likely to clear costs, under the ${(i.minConfidence * 100).toFixed(0)}% minimum.`;
+  } else if (e.riskAdjustedEdgePct <= 0) {
+    gate = `Its ${e.edgePct >= 0 ? "" : "negative "}edge of ${e.edgePct.toFixed(2)}% does not survive the ${(e.edgePct - e.riskAdjustedEdgePct).toFixed(2)}% charged for estimation uncertainty.`;
+  } else if (e.edgePct < i.minEdgePct) {
+    gate = `Its ${e.edgePct.toFixed(2)}% edge after costs is below the ${i.minEdgePct.toFixed(2)}% minimum.`;
+  } else if (e.kellyFraction < (i.tuning ?? DEFAULT_TUNING).minKellyFraction) {
+    gate = "The optimal stake rounds to nothing, so the edge is not worth the exposure.";
   }
 
+  if (gate && !i.forceTrade) return noTrade(gate, best);
+
   const name = best.input.candidate.name || e.ticker;
+  const forced = gate !== null;
+  const thesis = forced
+    ? `DEMO EXPLORATION TRADE. The engine would have passed: ${gate} It is buying its best-ranked name anyway so the real fill and the real overnight move become training data.\n\n${buildThesis(e, best.ctx, name)}`
+    : buildThesis(e, best.ctx, name);
   return {
     decision: {
       action: "BUY",
       ticker: e.ticker,
       confidence: e.probability,
-      investPct: e.kellyFraction,
+      investPct: forced ? i.forceTrade!.investPct : e.kellyFraction,
       expectedMovePct: e.expectedMovePct,
-      thesis: buildThesis(e, best.ctx, name),
+      thesis,
       risks: buildRisks(e, best.ctx),
       exitPlan: buildExitPlan(i.market),
       whyNotOthers: ranked
@@ -237,6 +240,7 @@ export function decide(i: DecideInput): DecideOutput {
         .map((x) => ({ ticker: x.evaluation.ticker, reason: whyNotReason(x.evaluation) })),
       lessonsApplied: best.appliedLessons,
       evaluations: ranked.map((x) => x.evaluation),
+      ...(forced ? { forced: true } : {}),
     },
     evaluated,
     chosen: best,

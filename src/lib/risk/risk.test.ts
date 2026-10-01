@@ -22,6 +22,17 @@ describe("guardrails", () => {
     expect(r.investValue).toBe(250); // 25% of 1000 total beats 50% requested
   });
 
+  it("waives the confidence and edge minimums for a demo exploration trade, and nothing else", () => {
+    const weak = { confidence: 0.3, investPct: 0.5, expectedMovePct: 0.1 };
+    expect(evaluateGuardrails(base({ proposal: weak })).allowed).toBe(false);
+    const explored = evaluateGuardrails(base({ proposal: weak, exploration: true }));
+    expect(explored.allowed).toBe(true);
+    expect(explored.notes.join(" ")).toMatch(/exploration/i);
+    expect(evaluateGuardrails(base({ proposal: weak, exploration: true, settings: SettingsSchema.parse({ killSwitch: true }) })).allowed).toBe(false);
+    expect(evaluateGuardrails(base({ proposal: weak, exploration: true, hasOpenPosition: true })).allowed).toBe(false);
+    expect(evaluateGuardrails(base({ proposal: weak, exploration: true, instrument: { type: "CRYPTOCURRENCY", name: "Bitcoin" } })).allowed).toBe(false);
+  });
+
   it("blocks on kill switch", () => {
     const r = evaluateGuardrails(base({ settings: SettingsSchema.parse({ killSwitch: true }) }));
     expect(r.allowed).toBe(false);
@@ -32,7 +43,8 @@ describe("guardrails", () => {
     expect(evaluateGuardrails(base({ hasOpenPosition: true })).allowed).toBe(false);
   });
 
-  it("blocks leveraged products and non stock/ETF types", () => {
+  it("allows single stocks only: ETFs, leveraged products and other types are blocked", () => {
+    expect(evaluateGuardrails(base({ instrument: { type: "ETF", name: "SPDR S&P 500" } })).allowed).toBe(false);
     expect(evaluateGuardrails(base({ instrument: { type: "ETF", name: "Direxion Daily 3x Bull" } })).allowed).toBe(false);
     expect(evaluateGuardrails(base({ instrument: { type: "CRYPTOCURRENCY", name: "Bitcoin" } })).allowed).toBe(false);
   });

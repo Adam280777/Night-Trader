@@ -259,6 +259,7 @@ export async function stageDecide(runId: number): Promise<void> {
       minConfidence,
       minEdgePct: settings.minExpectedEdgePct,
       tuning: settings.quant,
+      forceTrade: run.mode === "demo" && settings.demoForceTrade ? { investPct: settings.demoForceInvestPct } : undefined,
     });
 
     // Persist every candidate's feature vector and evaluation: this is tomorrow's training data.
@@ -289,6 +290,7 @@ export async function stageDecide(runId: number): Promise<void> {
         risks: decision.risks,
         sources: dedup,
         marketContext: marketCtx ?? null,
+        forced: decision.forced === true,
         guardrailNotes: lessonNotes,
       })
       .returning({ id: decisions.id });
@@ -321,7 +323,11 @@ export async function stageDecide(runId: number): Promise<void> {
       return;
     }
 
-    if (settings.approvalMode) {
+    if (decision.forced) {
+      // Demo money and a learning goal: no point waiting on a human to approve a trade made to be studied.
+      await log("info", "pipeline", `Demo exploration: the engine would have passed, so it is buying ${decision.ticker} anyway to learn from the result.`, runId);
+      await setRunStatus(runId, "ready_to_buy");
+    } else if (settings.approvalMode) {
       const deadline = new Date(
         Math.min(Date.now() + settings.approvalWindowMinutes * 60_000, closeAt.getTime() - (settings.minutesBeforeCloseToBuy + 1) * 60_000),
       );

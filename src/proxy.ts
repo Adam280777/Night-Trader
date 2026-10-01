@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth";
 
-const PUBLIC = ["/login", "/api/auth/login", "/api/cron/tick"]; // the tick endpoint authenticates itself with CRON_SECRET
+const PUBLIC = ["/login", "/api/auth/login", "/api/cron/tick", "/api/health"]; // operational endpoints authenticate themselves when configured
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;

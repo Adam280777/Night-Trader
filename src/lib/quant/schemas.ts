@@ -36,6 +36,23 @@ export const NewsItemSchema = z.object({
 });
 export type NewsItem = z.infer<typeof NewsItemSchema>;
 
+/** Company-level facts that price bars cannot supply. Every field is null when Yahoo has no data for the name. */
+export const FundamentalsSchema = z.object({
+  /** Consensus rating, 1 (strong buy) to 5 (sell). */
+  analystMean: z.number().nullable().default(null),
+  analystCount: z.number().nullable().default(null),
+  /** Mean analyst price target relative to the current price, in percent. */
+  targetUpsidePct: z.number().nullable().default(null),
+  /** Shares sold short as a fraction (0-1) of the free float. */
+  shortPctFloat: z.number().nullable().default(null),
+  /** Average earnings surprise over the last four reports, in percent of the estimate. */
+  epsSurprisePct: z.number().nullable().default(null),
+  /** Rating upgrades minus downgrades over the last 14 days. */
+  netUpgrades14d: z.number().nullable().default(null),
+  beta: z.number().nullable().default(null),
+});
+export type Fundamentals = z.infer<typeof FundamentalsSchema>;
+
 export const ResearchSchema = z.object({
   ticker: z.string(),
   summary: z.string(),
@@ -48,6 +65,7 @@ export const ResearchSchema = z.object({
   /** Headlines in the last 24h relative to this name's normal rate; 1 = typical. */
   newsBurst: z.number().default(1),
   headlines: z.array(NewsItemSchema).default([]),
+  fundamentals: FundamentalsSchema.nullable().default(null),
 });
 export type Research = z.infer<typeof ResearchSchema>;
 
@@ -95,6 +113,8 @@ export const DecisionSchema = z.object({
   whyNotOthers: z.array(z.object({ ticker: z.string(), reason: z.string() })),
   lessonsApplied: z.array(z.string()),
   evaluations: z.array(EvaluationSchema).default([]),
+  /** Set when a demo-mode exploration trade overrode the engine's own NO_TRADE. */
+  forced: z.boolean().optional(),
 });
 export type Decision = z.infer<typeof DecisionSchema>;
 

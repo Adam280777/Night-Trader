@@ -1,5 +1,7 @@
 import type { Settings } from "../config";
 import type { Market } from "../t212/instruments";
+import { roundTripCostPct } from "../quant/costs";
+import type { QuantTuning } from "../quant/tuning";
 
 export interface GuardrailInput {
   settings: Settings;
@@ -11,6 +13,11 @@ export interface GuardrailInput {
   pnl: { dayPct: number; weekPct: number };
   hasOpenPosition: boolean;
   minutesToClose: number;
+  /**
+   * A demo exploration trade deliberately ignores the confidence and net-edge minimums (that is the
+   * point of it). Every safety check - kill switch, loss limits, sizing, instrument type - still applies.
+   */
+  exploration?: boolean;
 }
 
 export interface GuardrailResult {
@@ -21,9 +28,9 @@ export interface GuardrailResult {
   notes: string[]; // adjustments/info
 }
 
-/** Approximate round-trip cost as a % of position: FX both ways (US), stamp duty (UK), plus spread. */
-export function estimatedRoundTripCostPct(market: Market): number {
-  return market === "US" ? 0.15 * 2 + 0.1 : 0.5 + 0.2;
+/** Approximate round-trip cost as a % of position (FX, stamp duty, spread), from the tuned cost settings. */
+export function estimatedRoundTripCostPct(market: Market, tuning?: QuantTuning): number {
+  return roundTripCostPct(market, undefined, tuning);
 }
 
 const LEVERAGED = /\b(2x|3x|5x|-1x|-2x|-3x|leveraged|ultra|ultrashort|inverse|bull|bear|short)\b/i;
@@ -35,17 +42,19 @@ export function evaluateGuardrails(i: GuardrailInput): GuardrailResult {
 
   if (s.killSwitch) reasons.push("Kill switch is on.");
   if (i.hasOpenPosition) reasons.push("A position is already open; one stock at a time.");
-  if (!["STOCK", "ETF"].includes(i.instrument.type)) reasons.push(`Instrument type ${i.instrument.type} not allowed.`);
+  if (i.instrument.type !== "STOCK") reasons.push(`Instrument type ${i.instrument.type} not allowed; single stocks only.`);
   if (LEVERAGED.test(i.instrument.name)) reasons.push("Leveraged/inverse products are not allowed.");
 
   const minConf = i.market === "UK" ? Math.max(s.minConfidence, s.ukMinConfidence) : s.minConfidence;
-  if (i.proposal.confidence < minConf) {
+  if (i.exploration) {
+    notes.push("Demo exploration trade: confidence and edge minimums waived so the outcome can be learned from.");
+  } else if (i.proposal.confidence < minConf) {
     reasons.push(`Confidence ${(i.proposal.confidence * 100).toFixed(0)}% below required ${(minConf * 100).toFixed(0)}%.`);
   }
 
-  const cost = estimatedRoundTripCostPct(i.market);
+  const cost = estimatedRoundTripCostPct(i.market, s.quant);
   const netEdge = i.proposal.expectedMovePct - cost;
-  if (netEdge < s.minExpectedEdgePct) {
+  if (!i.exploration && netEdge < s.minExpectedEdgePct) {
     reasons.push(
       `Expected move ${i.proposal.expectedMovePct.toFixed(2)}% minus ~${cost.toFixed(2)}% costs leaves ${netEdge.toFixed(2)}%, below the ${s.minExpectedEdgePct}% minimum.`,
     );

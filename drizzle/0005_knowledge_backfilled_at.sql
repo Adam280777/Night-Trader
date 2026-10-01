@@ -1,0 +1,1 @@
+ALTER TABLE `knowledge` ADD `backfilled_at` integer;

@@ -40,6 +40,21 @@ The **Live activity** page is a running feed of what the engine is doing: which 
 what it has shortlisted and why each name is still in or already out, which symbols it has studied most recently
 and what it scored them, plus every logged event as it happens. It refreshes every few seconds and can be paused.
 
+The dashboard and **Learning** page add an equity curve, run-outcome breakdown, return calendar and distribution,
+model reliability plot, and weight comparison while retaining the underlying tables. **Logs** exposes searchable
+structured context and CSV export. **System health** shows scheduler heartbeat, job success and duration, recent
+failures, log volume, and database growth.
+
+Operational settings control snapshot, outcome, learning and backfill cadence; log, job and equity retention;
+the worker-offline and slow-job thresholds; and successful-job verbosity. Background-job timings and failures are
+recorded independently of verbose logging, and operational data is pruned automatically without deleting trading
+history or learned model state.
+
+For monitoring outside the dashboard, point an uptime service at `GET /api/health`; it returns a non-200 response
+when scheduler heartbeats stop or an order outcome is unresolved. Set `HEALTH_SECRET` to require a bearer token.
+Setting `ALERT_WEBHOOK_URL` also sends deduplicated critical-error JSON to an operator-owned webhook. Execution
+orders retain their reference quote, quote age, available spread, actual fill, and adverse slippage.
+
 ## Tuning the model
 
 Every constant the engine uses is defined once in [`src/lib/quant/tuning.ts`](src/lib/quant/tuning.ts): a zod schema

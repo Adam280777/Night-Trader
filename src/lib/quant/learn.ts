@@ -13,15 +13,19 @@
 
 import { and, asc, desc, eq, gt, isNotNull } from "drizzle-orm";
 import { getDb, schema } from "../db";
-import { roundTripCostPct } from "./costs";
+import { breakEvenPct, roundTripCostPct } from "./costs";
 import { FEATURES, FEATURE_BY_KEY } from "./features";
 import { diagnostics, loadModel, saveModel, train, type ModelState, type TrainingSample } from "./model";
 import { binomialPValue, clamp, logit, mean, median, shrunkRate, quantile } from "./stats";
-import type { LessonRule, Review } from "./schemas";
+import type { LessonRule, MarketContext, Review } from "./schemas";
 import { DEFAULT_TUNING, type QuantTuning } from "./tuning";
 import { getTuning } from "../config";
+import { getKv } from "../kv";
+import { accuracyOf } from "./accuracy";
+import { chronologicalEvaluation } from "./evaluation";
+import { BACKFILL_STATS_KEY, type BackfillStats } from "./backfill";
 
-const { candidates, runs, lessons } = schema;
+const { candidates, decisions, runs, lessons } = schema;
 
 export interface LabelledRow {
   id: number;
@@ -32,20 +36,26 @@ export interface LabelledRow {
   costPct: number;
   /** True when the realised move cleared costs. */
   label: boolean;
+  /** What the engine said at the time, when it evaluated this candidate. */
+  probability?: number | null;
+  screenScore?: number | null;
+  regime?: "unknown" | "calm" | "normal" | "stressed";
 }
 
 async function labelledRows(afterId = 0, tuning: QuantTuning = DEFAULT_TUNING): Promise<LabelledRow[]> {
   const rows = await getDb()
-    .select({ c: candidates, market: runs.market })
+    .select({ c: candidates, market: runs.market, marketContext: decisions.marketContext })
     .from(candidates)
     .innerJoin(runs, eq(candidates.runId, runs.id))
+    .leftJoin(decisions, eq(decisions.runId, runs.id))
     .where(and(isNotNull(candidates.overnightReturnPct), isNotNull(candidates.features), gt(candidates.id, afterId)))
     .orderBy(asc(candidates.id));
 
   return rows
     .filter((r) => r.c.features && r.c.overnightReturnPct != null)
-    .map(({ c, market }) => {
-      const cost = roundTripCostPct(
+    .map(({ c, market, marketContext }) => {
+      // Same hurdle the decision uses (costs plus opening-auction slippage), or the model learns a different target.
+      const cost = breakEvenPct(
         market,
         {
           atrPct: Number((c.signals as Record<string, number> | null)?.atrPct ?? 2),
@@ -61,6 +71,9 @@ async function labelledRows(afterId = 0, tuning: QuantTuning = DEFAULT_TUNING): 
         returnPct: c.overnightReturnPct!,
         costPct: cost,
         label: c.overnightReturnPct! > cost,
+        probability: typeof (c.evaluation as { probability?: unknown } | null)?.probability === "number" ? (c.evaluation as { probability: number }).probability : null,
+        screenScore: c.screenScore,
+        regime: (marketContext as MarketContext | null)?.volRegime,
       };
     });
 }
@@ -261,6 +274,24 @@ export async function getModelReport() {
   const d = diagnostics(state);
   const rows = await labelledRows();
   const base = rows.length ? rows.filter((r) => r.label).length / rows.length : null;
+  const accuracy = accuracyOf(
+    rows.flatMap((r) => (r.probability != null && r.screenScore != null ? [{ probability: r.probability, screenScore: r.screenScore, label: r.label }] : [])),
+  );
+  const walkForward = chronologicalEvaluation(
+    rows.flatMap((r) =>
+      r.probability != null && r.screenScore != null
+        ? [{
+            id: r.id,
+            market: r.market,
+            probability: r.probability,
+            screenScore: r.screenScore,
+            label: r.label,
+            regime: r.regime,
+          }]
+        : [],
+    ),
+  );
+  const backfill = (await getKv<BackfillStats>(BACKFILL_STATS_KEY))?.value ?? null;
   const activeRules = await getDb()
     .select()
     .from(lessons)
@@ -272,6 +303,9 @@ export async function getModelReport() {
     labelledRows: rows.length,
     baseRate: base,
     calibrationError: d.calibrationError,
+    accuracy,
+    walkForward,
+    backfill,
     reliability: d.reliability,
     learned: d.learned.slice(0, 10).map((l) => ({ ...l, label: FEATURE_BY_KEY.get(l.key)?.label ?? l.key })),
     rules: activeRules.map((r) => ({ id: r.id, text: r.text, rule: r.rule })),

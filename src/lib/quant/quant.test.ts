@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { binomialPValue, logit, normalCdf, normalMeanAbove, normalMeanBelow, rsi, shrunkRate, sigmoid, std } from "./stats";
 import { classifyHeadline, scoreHeadline } from "./news";
-import { computeSignals, overnightGaps, type Signals } from "./screener";
+import { breakEvenPct, roundTripCostPct } from "./costs";
+import { computeSignals, majorUnitPrice, overnightGaps, type Signals } from "./screener";
 import { findAnalogues, unconditionalAnalogue } from "./analogues";
 import { freshModel, predict, train, applyCalibration } from "./model";
 import { matchesRule, applyRules } from "./rules";
 import { mineLessons, type LabelledRow } from "./learn";
 import { decide, type CandidateInput, type DecideInput } from "./decide";
-import { priorWeights } from "./features";
+import { extractFeatures, priorWeights } from "./features";
 import { DEFAULT_TUNING, QuantTuningSchema, TUNING_GROUPS, TUNING_PARAMS, TUNING_PRESETS } from "./tuning";
+import { accuracyOf, auc } from "./accuracy";
+import { REPLAY_FROZEN_FEATURES, marketContextSeries, replayFrozenFeatures, replaySymbol, selectShortlisted, type ReplayRow } from "./backfill";
+import { ResearchSchema } from "./schemas";
+import { chronologicalEvaluation, strategyRisk } from "./evaluation";
 import type { Bar } from "../market/data";
 
 describe("stats", () => {
@@ -16,6 +21,30 @@ describe("stats", () => {
     expect(normalCdf(0)).toBeCloseTo(0.5, 6);
     expect(normalCdf(1.96)).toBeCloseTo(0.975, 3);
     expect(normalCdf(-1.96)).toBeCloseTo(0.025, 3);
+  });
+
+  describe("strategy evaluation", () => {
+    it("computes compounded return, drawdown and profit factor in sequence", () => {
+      const report = strategyRisk([10, -10, 5])!;
+      expect(report.compoundedReturnPct).toBeCloseTo(3.95, 6);
+      expect(report.maxDrawdownPct).toBeCloseTo(10, 6);
+      expect(report.profitFactor).toBeCloseTo(1.5, 6);
+      expect(report.worstPct).toBe(-10);
+    });
+
+    it("keeps chronological and market slices separate", () => {
+      const rows = Array.from({ length: 20 }, (_, index) => ({
+        id: 20 - index,
+        market: (index % 2 ? "US" : "UK") as "US" | "UK",
+        probability: index < 10 ? 0.8 : 0.2,
+        screenScore: index,
+        label: index < 10,
+      }));
+      const report = chronologicalEvaluation(rows)!;
+      expect(report.slices.map((slice) => slice.label)).toEqual(["All live predictions", "Earlier half", "Recent half", "US", "UK", "calm volatility", "normal volatility", "stressed volatility", "unknown volatility"]);
+      expect(report.slices[1].n).toBe(10);
+      expect(report.slices[2].n).toBe(10);
+    });
   });
 
   it("conditional means straddle the threshold", () => {
@@ -114,8 +143,66 @@ describe("screener signals", () => {
     expect(s!.gapHitRate).toBeCloseTo(1, 2);
   });
 
+  it("measures UK turnover in pounds, not pence", () => {
+    const bars = makeBars(140, () => 0.4);
+    const q = { price: 2500, volume: 1_000_000, avgVolume3m: 1_000_000 };
+    const uk = computeSignals(bars, { ...q, currency: "GBp" }, 2)!;
+    const us = computeSignals(bars, { ...q, price: 25, currency: "USD" }, 2)!;
+    expect(uk.dollarVolume).toBeCloseTo(us.dollarVolume, 6);
+    expect(majorUnitPrice(2500, "GBX")).toBe(25);
+    expect(majorUnitPrice(25, "GBP")).toBe(25);
+  });
+
+  it("reports this morning's gap and how often the name opens badly", () => {
+    const bars = makeBars(130, (i) => (i === 129 ? 3 : i % 10 === 0 ? -4 : 0.1));
+    const sig = computeSignals(bars, { price: 100, volume: 5e6, avgVolume3m: 5e6, currency: "USD" }, 2)!;
+    expect(sig.gapLastPct).toBeCloseTo(3, 6);
+    expect(sig.gapTailRate).toBeGreaterThan(0.05);
+    expect(sig.gapTailRate).toBeLessThan(0.15);
+  });
+
   it("returns null without enough history", () => {
     expect(computeSignals(makeBars(5, () => 0.1), { price: 100, currency: "USD" } as never, 2)).toBeNull();
+  });
+});
+
+describe("fundamentals features", () => {
+  const sig = {
+    ret1dPct: 0, ret5dPct: 0, ret20dPct: 0, gapMeanPct: 0, gapStdPct: 1, gapHitRate: 0.5, gapSharpe: 0, gapTStat: 0, gapLastPct: 0, gapTailRate: 0,
+    gapRecentPct: 0, gapWeekdayPct: 0, overnightShare: 0, atrPct: 2, realizedVolPct: 20, closeLocation: 0.5, intradayRangePct: 2, relVolume: 1,
+    volumeTrend: 1, dollarVolume: 5e7, rsi14: 50, vsSma20Pct: 0, vsSma50Pct: 0, from52wHighPct: 0, earningsWithin2d: false,
+  } as Signals;
+  const research = (f: unknown) => ResearchSchema.parse({ ticker: "X", summary: "", catalysts: [], risks: [], sentiment: 0, overnightRisk: "low", earningsOrBinaryEventBeforeNextOpen: false, sources: [], fundamentals: f });
+
+  it("turns analyst data into signed features and stays neutral without it", () => {
+    const bullish = extractFeatures({ market: "US", signals: sig, context: null, research: research({ analystMean: 1.5, targetUpsidePct: 30, shortPctFloat: 0.2, epsSurprisePct: 10, netUpgrades14d: 2 }) });
+    expect(bullish.analystTilt).toBeCloseTo(0.75, 6);
+    expect(bullish.targetUpside).toBeCloseTo(1, 6);
+    expect(bullish.analystRevisions).toBe(2);
+    expect(bullish.shortInterest).toBeCloseTo(2, 6);
+    expect(bullish.earningsSurprise).toBeCloseTo(1, 6);
+
+    const none = extractFeatures({ market: "US", signals: sig, context: null, research: research(null) });
+    for (const k of ["analystTilt", "targetUpside", "analystRevisions", "shortInterest", "earningsSurprise"]) expect(none[k]).toBe(0);
+    for (const k of ["gapLast", "gapTail"]) expect(Number.isFinite(extractFeatures({ market: "US", signals: sig, context: null, research: null })[k])).toBe(true);
+  });
+
+  it("reads research stored before fundamentals existed", () => {
+    const old = ResearchSchema.parse({ ticker: "X", summary: "", catalysts: [], risks: [], sentiment: 0, overnightRisk: "low", earningsOrBinaryEventBeforeNextOpen: false, sources: [] });
+    expect(old.fundamentals).toBeNull();
+  });
+});
+
+describe("costs", () => {
+  const sig = { atrPct: 1.5, dollarVolume: 50_000_000 };
+  it("charges stamp duty on UK stocks and not on US ones", () => {
+    const uk = roundTripCostPct("UK", sig);
+    expect(uk).toBeGreaterThan(DEFAULT_TUNING.ukStampDutyPct);
+    expect(uk).toBeGreaterThan(roundTripCostPct("US", sig));
+  });
+
+  it("adds opening-auction slippage on top of the round trip", () => {
+    expect(breakEvenPct("US", sig) - roundTripCostPct("US", sig)).toBeCloseTo(DEFAULT_TUNING.openingAuctionSlippagePct, 6);
   });
 });
 
@@ -250,6 +337,8 @@ describe("decide", () => {
     gapHitRate: 0.6,
     gapSharpe: 0.3,
     gapTStat: 2.5,
+    gapLastPct: 0.2,
+    gapTailRate: 0.05,
     gapRecentPct: 0.4,
     gapWeekdayPct: 0.3,
     overnightShare: 0.6,
@@ -401,6 +490,23 @@ describe("decide", () => {
     expect(pricey.evaluated[0].evaluation.edgePct).toBeLessThan(cheap.evaluated[0].evaluation.edgePct);
   });
 
+  it("a demo exploration trade is made even when the engine would pass", () => {
+    const passes = decide(base({ minConfidence: 0.99 }));
+    expect(passes.decision.action).toBe("NO_TRADE");
+    const forced = decide(base({ minConfidence: 0.99, forceTrade: { investPct: 0.1 } }));
+    expect(forced.decision.action).toBe("BUY");
+    expect(forced.decision.forced).toBe(true);
+    expect(forced.decision.investPct).toBeCloseTo(0.1);
+    expect(forced.decision.thesis).toMatch(/DEMO EXPLORATION/);
+    expect(forced.chosen).not.toBeNull();
+  });
+
+  it("an exploration trade never overrides a veto or an empty shortlist", () => {
+    const vetoed = decide(base({ candidates: [candidate({ earningsWithin2d: true })], forceTrade: { investPct: 0.1 } }));
+    expect(vetoed.decision.action).toBe("NO_TRADE");
+    expect(decide(base({ candidates: [], forceTrade: { investPct: 0.1 } })).decision.action).toBe("NO_TRADE");
+  });
+
   it("the turnover veto threshold is tunable in both directions", () => {
     const thin = candidate({ dollarVolume: 3_000_000 });
     const permissive = decide(base({ candidates: [thin], minConfidence: 0, minEdgePct: -100 }));
@@ -474,5 +580,114 @@ describe("tuning registry", () => {
     const k = (id: keyof typeof TUNING_PRESETS) => ({ ...DEFAULT_TUNING, ...TUNING_PRESETS[id].values }).kellyFraction;
     expect(k("cautious")).toBeLessThan(k("balanced"));
     expect(k("balanced")).toBeLessThan(k("aggressive"));
+  });
+});
+
+describe("model training options", () => {
+  const row = (x: number, y: boolean) => ({ features: { gapSharpe: x, newsSentiment: 0 }, label: y });
+
+  it("leaves frozen features untouched and out of the statistics", () => {
+    const state = freshModel();
+    const samples = Array.from({ length: 80 }, (_, i) => row((i % 10) / 20, i % 3 === 0));
+    const next = train(state, samples, DEFAULT_TUNING, { frozen: new Set(["newsSentiment"]) });
+    expect(next.weights.newsSentiment).toBe(state.weights.newsSentiment);
+    expect(next.stats.newsSentiment.n).toBe(0);
+    expect(next.stats.gapSharpe.n).toBe(80);
+  });
+
+  it("skips the reliability curve when asked", () => {
+    const samples = Array.from({ length: 30 }, (_, i) => row(0.1, i % 2 === 0));
+    const next = train(freshModel(), samples, DEFAULT_TUNING, { calibrate: false });
+    expect(next.calibration.reduce((s, b) => s + b.n, 0)).toBe(0);
+    expect(next.samples).toBe(30);
+    const calibrated = train(freshModel(), samples, DEFAULT_TUNING);
+    expect(calibrated.calibration.reduce((s, b) => s + b.n, 0)).toBe(30);
+  });
+});
+
+describe("history replay", () => {
+  const bars = makeBars(220, (i) => (i % 2 === 0 ? 0.6 : -0.1));
+  const meta = { symbol: "TST", market: "US" as const, currency: "USD" };
+  const dateOf = (b: Bar) => b.date.toISOString().slice(0, 10);
+
+  it("labels each night from the next open and never looks ahead", () => {
+    const rows = replaySymbol(bars, meta, DEFAULT_TUNING, { holdoutDays: 0 });
+    expect(rows.length).toBeGreaterThan(100);
+    for (const r of rows) {
+      const i = bars.findIndex((b) => dateOf(b) === r.date);
+      expect(r.gapPct).toBeCloseTo((bars[i + 1].open / bars[i].close - 1) * 100, 8);
+    }
+    const mid = rows[Math.floor(rows.length / 2)];
+    const cut = bars.findIndex((b) => dateOf(b) === mid.date);
+    const again = replaySymbol(bars.slice(0, cut + 2), meta, DEFAULT_TUNING, { holdoutDays: 0 });
+    expect(again.at(-1)!.features).toEqual(mid.features);
+  });
+
+  it("holds out the most recent sessions", () => {
+    const all = replaySymbol(bars, meta, DEFAULT_TUNING, { holdoutDays: 0 });
+    const held = replaySymbol(bars, meta, DEFAULT_TUNING, { holdoutDays: 10 });
+    expect(held.length).toBe(all.length - 10);
+  });
+
+  it("skips corporate-action sized gaps and long calendar holes", () => {
+    const jump = makeBars(150, (i) => (i === 100 ? 40 : 0.2));
+    const rows = replaySymbol(jump, meta, DEFAULT_TUNING, { holdoutDays: 0 });
+    expect(rows.some((r) => Math.abs(r.gapPct) > 25)).toBe(false);
+
+    const holes = makeBars(150, () => 0.2).map((b, i) => (i > 80 ? { ...b, date: new Date(b.date.getTime() + 10 * 86_400_000) } : b));
+    const withHole = replaySymbol(holes, meta, DEFAULT_TUNING, { holdoutDays: 0 });
+    expect(withHole.every((r) => r.date !== dateOf(holes[80]))).toBe(true);
+  });
+
+  it("keeps only the top share of each date by score", () => {
+    const mk = (symbol: string, date: string, score: number): ReplayRow => ({ symbol, date, score, features: {}, label: true, gapPct: 0 });
+    const rows = [mk("A", "2024-01-02", 3), mk("B", "2024-01-02", 1), mk("C", "2024-01-02", 2), mk("D", "2024-01-02", 0), mk("A", "2024-01-03", 1)];
+    const kept = selectShortlisted(rows, 0.25);
+    expect(kept.map((r) => `${r.date}:${r.symbol}`)).toEqual(["2024-01-02:A", "2024-01-03:A"]);
+  });
+
+  it("freezes exactly the features a bar series cannot supply", () => {
+    for (const k of ["newsSentiment", "marketBias", "trend", "earningsSoon", "analystTilt", "shortInterest"]) expect(REPLAY_FROZEN_FEATURES.has(k)).toBe(true);
+    for (const k of ["gapSharpe", "closeLocation", "relVolume", "gapLast", "gapTail"]) expect(REPLAY_FROZEN_FEATURES.has(k)).toBe(false);
+  });
+
+  it("rebuilds market-regime features from index and VIX history", () => {
+    const index = makeBars(220, () => 0.1);
+    const vix = makeBars(220, (i) => (i % 7 === 0 ? 5 : -0.5)).map((b) => ({ ...b, close: 12 + (b.close % 20) }));
+    const series = marketContextSeries(index, vix);
+    expect(series.size).toBeGreaterThan(100);
+    const ctx = series.get(dateOf(index[150]))!;
+    expect(ctx.trendRegime).toBe("bull");
+    expect(ctx.vix).toBeCloseTo(vix[150].close, 8);
+    expect(ctx.vixChangePct).toBeCloseTo((vix[150].close / vix[149].close - 1) * 100, 8);
+
+    const withCtx = replaySymbol(bars, meta, DEFAULT_TUNING, { holdoutDays: 0, marketContext: series });
+    const without = replaySymbol(bars, meta, DEFAULT_TUNING, { holdoutDays: 0 });
+    expect(withCtx.length).toBeGreaterThan(50);
+    expect(withCtx.length).toBeLessThanOrEqual(without.length);
+    expect(new Set(withCtx.map((r) => r.features.volRegime)).size).toBeGreaterThan(1);
+    expect(new Set(without.map((r) => r.features.volRegime)).size).toBe(1);
+
+    expect(replayFrozenFeatures(true).has("volRegime")).toBe(false);
+    expect(replayFrozenFeatures(true).has("newsSentiment")).toBe(true);
+    expect(replayFrozenFeatures(false).has("volRegime")).toBe(true);
+  });
+});
+
+describe("accuracy", () => {
+  it("computes AUC with ties as half", () => {
+    expect(auc([0.9, 0.8, 0.2, 0.1], [true, true, false, false])).toBe(1);
+    expect(auc([0.1, 0.2, 0.8, 0.9], [true, true, false, false])).toBe(0);
+    expect(auc([0.5, 0.5], [true, false])).toBe(0.5);
+    expect(auc([0.5, 0.6], [true, true])).toBeNull();
+  });
+
+  it("scores a perfect model below the base-rate Brier", () => {
+    const rows = [0.9, 0.9, 0.1, 0.1].map((p, i) => ({ probability: p, screenScore: 4 - i, label: i < 2 }));
+    const r = accuracyOf(rows)!;
+    expect(r.brier).toBeCloseTo(0.01, 6);
+    expect(r.baselineBrier).toBeCloseTo(0.25, 6);
+    expect(r.modelAuc).toBe(1);
+    expect(accuracyOf([])).toBeNull();
   });
 });

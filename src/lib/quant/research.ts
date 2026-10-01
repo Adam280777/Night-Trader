@@ -6,7 +6,7 @@
  * `Research` shape, with real source URLs taken from the headlines that were actually read.
  */
 
-import { getDailyBars } from "../market/data";
+import { getDailyBars, getFundamentals } from "../market/data";
 import { findAnalogues, serializeAnalogue, unconditionalAnalogue, type AnalogueResult, type AnalogueSnapshot } from "./analogues";
 import { analyseNews, type NewsAnalysis } from "./news";
 import { overnightGaps, type Candidate } from "./screener";
@@ -67,7 +67,7 @@ export interface CandidateResearch {
 }
 
 export async function researchCandidate(c: Candidate, tuning: QuantTuning = DEFAULT_TUNING): Promise<CandidateResearch> {
-  const news = await analyseNews(c.yahoo, tuning);
+  const [news, fundamentals] = await Promise.all([analyseNews(c.yahoo, tuning), getFundamentals(c.yahoo, c.price)]);
 
   let analogue: AnalogueResult | null = null;
   try {
@@ -87,6 +87,14 @@ export async function researchCandidate(c: Candidate, tuning: QuantTuning = DEFA
   }
 
   const risks = [...news.risks];
+  if (fundamentals) {
+    const f = fundamentals;
+    if (f.netUpgrades14d != null && f.netUpgrades14d >= 2) catalysts.push(`${f.netUpgrades14d} net analyst upgrades in the last two weeks`);
+    if (f.netUpgrades14d != null && f.netUpgrades14d <= -2) risks.push(`${-f.netUpgrades14d} net analyst downgrades in the last two weeks`);
+    if (f.epsSurprisePct != null && f.epsSurprisePct > 5) catalysts.push(`Beat earnings estimates by ${f.epsSurprisePct.toFixed(0)}% on average over four reports`);
+    if (f.epsSurprisePct != null && f.epsSurprisePct < -5) risks.push(`Missed earnings estimates by ${(-f.epsSurprisePct).toFixed(0)}% on average over four reports`);
+    if (f.shortPctFloat != null && f.shortPctFloat > 0.15) risks.push(`High short interest: ${(f.shortPctFloat * 100).toFixed(0)}% of the float is sold short`);
+  }
   if (c.signals.earningsWithin2d) risks.push("Earnings due within two days");
   if (news.binaryEventPending) risks.push("A binary event may resolve before the next open");
   if (c.signals.gapStdPct > 2.5) risks.push(`Wide overnight dispersion (${c.signals.gapStdPct.toFixed(2)}%)`);
@@ -103,6 +111,7 @@ export async function researchCandidate(c: Candidate, tuning: QuantTuning = DEFA
     sources,
     newsBurst: news.burst,
     headlines: news.items.slice(0, 12),
+    fundamentals,
   };
 
   return { research, analogue, analogueSnapshot: analogue ? serializeAnalogue(analogue) : null };

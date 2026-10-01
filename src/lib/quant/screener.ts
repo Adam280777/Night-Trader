@@ -19,6 +19,10 @@ export interface Signals {
   gapSharpe: number;
   /** t-statistic of the mean gap: separates a real drift from a small-sample fluke. */
   gapTStat: number;
+  /** This morning's open versus yesterday's close: whether the name already gapped today. */
+  gapLastPct: number;
+  /** Share of recent nights that opened more than 2% lower: the left tail the mean hides. */
+  gapTailRate: number;
   /** Mean gap over just the last 20 sessions, to catch a regime change in the name. */
   gapRecentPct: number;
   /** Mean gap on the weekday the next open falls on. */
@@ -67,10 +71,15 @@ export function intradayReturns(bars: Bar[]): number[] {
   return bars.filter((b) => b.open > 0).map((b) => (b.close / b.open - 1) * 100);
 }
 
+/** London quotes are in pence (GBp/GBX); turnover and liquidity thresholds are in pounds/dollars. */
+export function majorUnitPrice(price: number, currency?: string): number {
+  return currency === "GBp" || currency === "GBX" ? price / 100 : price;
+}
+
 /** Pure: derive signals from daily bars (oldest first). Returns null without enough history. */
 export function computeSignals(
   bars: Bar[],
-  q: Pick<Quote, "volume" | "avgVolume3m" | "price">,
+  q: Pick<Quote, "volume" | "avgVolume3m" | "price"> & { currency?: string },
   nextOpenWeekday: number,
 ): Omit<Signals, "earningsWithin2d"> | null {
   if (bars.length < 25) return null;
@@ -113,6 +122,8 @@ export function computeSignals(
     gapHitRate: gaps.length ? gaps.filter((g) => g > 0).length / gaps.length : 0.5,
     gapSharpe: finite(gapStd > 0 ? gapMean / gapStd : 0),
     gapTStat: finite(gapTStat),
+    gapLastPct: finite(gapsAll.at(-1)?.pct ?? 0),
+    gapTailRate: window.length ? window.filter((g) => g.pct < -2).length / window.length : 0,
     gapRecentPct: finite(mean(gaps.slice(-20))),
     gapWeekdayPct: finite(weekdayGaps.length >= 5 ? mean(winsorize(weekdayGaps)) : gapMean),
     overnightShare: finite(denom > 0 ? totalOvernight / denom : 0),
@@ -122,7 +133,7 @@ export function computeSignals(
     intradayRangePct: finite(last.close > 0 ? (range / last.close) * 100 : 0),
     relVolume: finite(q.avgVolume3m > 0 ? q.volume / q.avgVolume3m : 1, 1),
     volumeTrend: finite(baseVol > 0 ? recentVol / baseVol : 1, 1),
-    dollarVolume: finite(q.avgVolume3m * q.price),
+    dollarVolume: finite(q.avgVolume3m * majorUnitPrice(q.price, q.currency)),
     rsi14: finite(rsi(closes, 14), 50),
     vsSma20Pct: finite(s20 > 0 ? (last.close / s20 - 1) * 100 : 0),
     vsSma50Pct: finite(s50 > 0 ? (last.close / s50 - 1) * 100 : 0),
@@ -167,6 +178,10 @@ export interface ScoreOpts {
   /** Keep only this many of the most liquid names after the quote filter. */
   poolCap?: number;
   concurrency?: number;
+  /** Told about each symbol dropped for a lasting reason (illiquid, tiny, too little history), not a transient one. */
+  onDrop?: (item: SymbolRef, reason: string) => void;
+  /** Epoch ms after which no further Yahoo calls are started; whatever was scored by then is returned. */
+  deadline?: number;
 }
 
 /**
@@ -177,37 +192,49 @@ export interface ScoreOpts {
 export async function scoreSymbols(items: SymbolRef[], o: ScoreOpts): Promise<Candidate[]> {
   const t = o.tuning ?? DEFAULT_TUNING;
   if (items.length === 0) return [];
-  const quotes = await getQuotes(items.map((i) => i.yahoo));
+  const quotes = await getQuotes(items.map((i) => i.yahoo), o.deadline);
 
   let withQuotes = items
     .map((i) => ({ i, q: quotes.get(i.yahoo) }))
     .filter((p): p is { i: SymbolRef; q: Quote } => !!p.q);
 
+  // When Yahoo returned nothing at all it is down or rate-limiting, which says nothing about the symbols.
+  // A deadline cut-off also leaves symbols without quotes, which is no reason to shelve them.
+  const cutOff = o.deadline !== undefined && Date.now() >= o.deadline;
+  if (withQuotes.length > 0 && !cutOff) for (const i of items) if (!quotes.has(i.yahoo)) o.onDrop?.(i, "no quote");
+
   if (o.minDollarVolume !== undefined || o.minMarketCap !== undefined) {
+    const drop = (p: { i: SymbolRef }, reason: string) => {
+      o.onDrop?.(p.i, reason);
+      return false;
+    };
     withQuotes = withQuotes.filter((p) => {
-      // GBp/GBX quotes are in pence, so convert before comparing against a pounds threshold.
-      const price = p.q.currency === "GBp" || p.q.currency === "GBX" ? p.q.price / 100 : p.q.price;
-      if (price < 1) return false;
-      if (o.minDollarVolume !== undefined && p.q.avgVolume3m * price < o.minDollarVolume) return false;
-      if (o.minMarketCap !== undefined && (p.q.marketCap ?? 0) < o.minMarketCap) return false;
+      const price = majorUnitPrice(p.q.price, p.q.currency);
+      if (price < 1) return drop(p, "price under 1");
+      if (o.minDollarVolume !== undefined && p.q.avgVolume3m * price < o.minDollarVolume) return drop(p, "too illiquid");
+      if (o.minMarketCap !== undefined && (p.q.marketCap ?? 0) < o.minMarketCap) return drop(p, "market cap too small");
       return true;
     });
   }
 
   if (o.poolCap !== undefined) {
-    withQuotes = withQuotes.sort((a, b) => b.q.avgVolume3m * b.q.price - a.q.avgVolume3m * a.q.price).slice(0, o.poolCap);
+    const turnover = (p: { q: Quote }) => p.q.avgVolume3m * majorUnitPrice(p.q.price, p.q.currency);
+    withQuotes = withQuotes.sort((a, b) => turnover(b) - turnover(a)).slice(0, o.poolCap);
   }
 
   const scored: Candidate[] = [];
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(o.concurrency ?? 4, withQuotes.length) }, async () => {
-      while (next < withQuotes.length) {
+      while (next < withQuotes.length && !(o.deadline !== undefined && Date.now() >= o.deadline)) {
         const p = withQuotes[next++];
         try {
           const bars = await getDailyBars(p.i.yahoo, t.historyBars);
           const sig = computeSignals(bars, p.q, o.nextOpenWeekday);
-          if (!sig) continue;
+          if (!sig) {
+            o.onDrop?.(p.i, "too little history");
+            continue;
+          }
           scored.push({
             ticker: p.i.ticker,
             name: p.i.name,
@@ -269,7 +296,7 @@ export async function screenUniverse(instruments: TradableInstrument[], o: Scree
 /** Every tradable name in a market, in a stable order so a study rotation can page through it. */
 export function universeOf(instruments: TradableInstrument[], market: Market, exclude?: Set<string>): SymbolRef[] {
   return instruments
-    .filter((i) => (i.type === "STOCK" || i.type === "ETF") && marketOf(i) === market)
+    .filter((i) => i.type === "STOCK" && marketOf(i) === market)
     .filter((i) => !exclude?.has(i.ticker))
     .flatMap((i) => {
       const yahoo = yahooSymbol(i);

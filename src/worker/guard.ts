@@ -32,6 +32,7 @@ export async function checkDecisionGuardrails(
     pnl: await pnlWindows(acct.totalValue),
     hasOpenPosition: !!await openTrade(),
     minutesToClose,
+    exploration: d.forced && run.mode === "demo",
   });
   if (await anyUnknownOrders()) {
     result.allowed = false;

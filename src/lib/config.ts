@@ -4,6 +4,29 @@ import { getDb, schema } from "./db";
 import { decrypt, encrypt } from "./secrets";
 import { QuantTuningSchema } from "./quant/tuning";
 
+/** Operational knobs: how often background chores run, how long history is kept, how loud to log. */
+export const OpsSchema = z.object({
+  logRetentionDays: z.number().int().min(1).max(365).default(14),
+  jobRetentionDays: z.number().int().min(1).max(365).default(14),
+  equityRetentionDays: z.number().int().min(7).max(3650).default(730),
+  equitySnapshotMinutes: z.number().int().min(5).max(360).default(15),
+  outcomesIntervalMinutes: z.number().int().min(5).max(1440).default(60),
+  learningIntervalHours: z.number().int().min(1).max(72).default(6),
+  backfillIntervalMinutes: z.number().int().min(1).max(240).default(3),
+  /** The worker counts as down when its last heartbeat is older than this. */
+  workerStaleMinutes: z.number().int().min(2).max(60).default(4),
+  /** A background job taking longer than this is logged as a warning. */
+  slowJobSeconds: z.number().int().min(10).max(280).default(150),
+  /** Also write a line to the log for every successful background job, not only failures and slow ones. */
+  verboseLogging: z.boolean().default(false),
+  /** Maximum acceptable age of the Yahoo execution quote. */
+  maxUsQuoteAgeSeconds: z.number().int().min(30).max(3600).default(900),
+  maxUkQuoteAgeSeconds: z.number().int().min(60).max(3600).default(1200),
+  /** Emit a critical alert when an actual fill is this far from the reference quote. */
+  maxSlippagePct: z.number().min(0.05).max(10).default(1),
+});
+export type OpsSettings = z.infer<typeof OpsSchema>;
+
 /** User-tunable settings, persisted in SQLite. Hard limits live here but are enforced in lib/risk. */
 export const SettingsSchema = z.object({
   // "dry" = the full pipeline runs and results are simulated, no orders sent. "trading" = send orders to T212_ENV.
@@ -12,6 +35,10 @@ export const SettingsSchema = z.object({
   liveConfirmed: z.boolean().default(false),
   killSwitch: z.boolean().default(false),
   approvalMode: z.boolean().default(true),
+  /** Demo mode only: if the engine passes, still buy its best-ranked name so the outcome can be learned from. */
+  demoForceTrade: z.boolean().default(true),
+  /** Share of the account staked on a demo exploration trade. */
+  demoForceInvestPct: z.number().min(0.01).max(0.5).default(0.1),
   markets: z.object({ US: z.boolean().default(true), UK: z.boolean().default(true) }).default({
     US: true,
     UK: true,
@@ -29,6 +56,8 @@ export const SettingsSchema = z.object({
   approvalWindowMinutes: z.number().int().min(1).max(120).default(15),
   /** Everything adjustable inside the quantitative engine. */
   quant: QuantTuningSchema.default(QuantTuningSchema.parse({})),
+  /** Housekeeping, retention and diagnostics. None of this changes what the engine decides. */
+  ops: OpsSchema.default(OpsSchema.parse({})),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -72,6 +101,7 @@ export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
   // any key the caller left out of a partial patch. Merge them a level deeper.
   const merged: Record<string, unknown> = { ...current, ...patch };
   if (patch.quant) merged.quant = { ...current.quant, ...patch.quant };
+  if (patch.ops) merged.ops = { ...current.ops, ...patch.ops };
   if (patch.markets) merged.markets = { ...current.markets, ...patch.markets };
   const next = SettingsSchema.parse(merged);
   for (const [key, value] of Object.entries(next)) {

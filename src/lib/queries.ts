@@ -1,9 +1,10 @@
-import { and, asc, desc, eq, inArray, isNotNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, notInArray, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import { getEnvConfig, getSettings } from "./config";
 import { getAccountState, pnlWindows, tryClient, type AccountState } from "./account";
 import { getActiveLessons, getPerformanceStats } from "./quant/memory";
 import { getModelReport } from "./quant/learn";
+import { strategyRisk } from "./quant/evaluation";
 
 const { runs, decisions, trades, candidates, orders, equitySnapshots, eventLog, lessons } = schema;
 
@@ -14,10 +15,10 @@ export type DecisionRow = typeof decisions.$inferSelect;
 export type TradeRow = typeof trades.$inferSelect;
 
 /** The cloud scheduler is "alive" if an external timer has called the tick endpoint recently. */
-export async function getWorkerStatus() {
+export async function getWorkerStatus(staleMinutes = 4) {
   const [row] = await getDb().select().from(schema.settings).where(eq(schema.settings.key, "_heartbeat"));
   const last = typeof row?.value === "number" ? row.value : null;
-  return { lastHeartbeat: last, alive: last != null && Date.now() - last < 4 * 60_000 };
+  return { lastHeartbeat: last, alive: last != null && Date.now() - last < staleMinutes * 60_000 };
 }
 
 export async function getEnvStatus() {
@@ -115,10 +116,107 @@ export async function getLearning() {
     getActiveLessons(100),
     getModelReport(),
   ]);
-  return { stats, closed, scored, lessons: active, noTradeDays: noTrade.length, model };
+  return { stats, closed, scored, lessons: active, noTradeDays: noTrade.length, model, risk: strategyRisk(closed.map((row) => row.pnlPct ?? NaN)) };
 }
 
 export async function getSettingsView() {
   const [settings, env] = await Promise.all([getSettings(), getEnvStatus()]);
   return { settings, env };
+}
+
+export async function getDashboardInsights(limit = 180) {
+  const rows = await getDb()
+    .select({
+      id: runs.id,
+      date: runs.tradingDate,
+      status: runs.status,
+      market: runs.market,
+      pnlPct: trades.pnlPct,
+    })
+    .from(runs)
+    .leftJoin(trades, eq(trades.runId, runs.id))
+    .orderBy(desc(runs.id))
+    .limit(limit);
+
+  const status = new Map<string, number>();
+  for (const row of rows) status.set(row.status, (status.get(row.status) ?? 0) + 1);
+  return {
+    statuses: [...status].map(([label, value]) => ({ label: label.replaceAll("_", " "), value })),
+    returns: rows
+      .filter((row) => row.pnlPct != null)
+      .map((row) => ({ date: row.date, value: row.pnlPct!, label: `${row.market} run #${row.id}` })),
+    totalRuns: rows.length,
+  };
+}
+
+export async function getSystemDiagnostics() {
+  const db = getDb();
+  const [settings, jobs, counts, recentLevels, executionOrders] = await Promise.all([
+    getSettings(),
+    db.select().from(schema.jobRuns).orderBy(desc(schema.jobRuns.id)).limit(500),
+    Promise.all(
+      [
+        ["runs", runs],
+        ["decisions", decisions],
+        ["trades", trades],
+        ["candidates", candidates],
+        ["orders", orders],
+        ["logs", eventLog],
+        ["equity snapshots", equitySnapshots],
+        ["job records", schema.jobRuns],
+        ["lessons", lessons],
+      ] as const,
+    ).then((tables) =>
+      Promise.all(
+        tables.map(async ([label, table]) => {
+          const [row] = await db.select({ n: sql<number>`count(*)` }).from(table);
+          return { label, value: Number(row.n) };
+        }),
+      ),
+    ),
+    db
+      .select({ level: eventLog.level, n: sql<number>`count(*)` })
+      .from(eventLog)
+      .where(sql`${eventLog.ts} >= ${new Date(Date.now() - 24 * 60 * 60_000)}`)
+      .groupBy(eventLog.level),
+    db.select().from(orders).orderBy(desc(orders.id)).limit(200),
+  ]);
+
+  const latest = new Map<string, (typeof jobs)[number]>();
+  for (const job of jobs) if (!latest.has(job.job)) latest.set(job.job, job);
+  const failures = jobs.filter((job) => !job.ok);
+  const completed = jobs.filter((job) => job.ok);
+  const slippage = executionOrders.map((order) => order.slippagePct).filter((value): value is number => value != null && Number.isFinite(value));
+  const spreads = executionOrders.map((order) => order.spreadPct).filter((value): value is number => value != null && Number.isFinite(value));
+  const orderedSlippage = [...slippage].sort((a, b) => a - b);
+  const p95Index = Math.max(0, Math.ceil(orderedSlippage.length * 0.95) - 1);
+  const terminalOrders = executionOrders.filter((order) => ["filled", "partial", "rejected", "cancelled", "unknown"].includes(order.status));
+  const problematicOrders = terminalOrders.filter((order) => order.status !== "filled");
+
+  return {
+    settings,
+    jobs: [...jobs].reverse(),
+    latest: [...latest.values()].sort((a, b) => a.job.localeCompare(b.job)),
+    counts,
+    levelCounts: recentLevels.map((row) => ({ label: row.level, value: Number(row.n) })),
+    successRate: jobs.length ? completed.length / jobs.length : null,
+    failures: failures.length,
+    averageDurationMs: completed.length ? completed.reduce((sum, job) => sum + job.durationMs, 0) / completed.length : null,
+    execution: {
+      orders: executionOrders.length,
+      measuredFills: slippage.length,
+      averageSlippagePct: slippage.length ? slippage.reduce((sum, value) => sum + value, 0) / slippage.length : null,
+      p95SlippagePct: orderedSlippage.length ? orderedSlippage[p95Index] : null,
+      averageSpreadPct: spreads.length ? spreads.reduce((sum, value) => sum + value, 0) / spreads.length : null,
+      issueRate: terminalOrders.length ? problematicOrders.length / terminalOrders.length : null,
+      rejected: executionOrders.filter((order) => order.status === "rejected").length,
+      unknown: executionOrders.filter((order) => order.status === "unknown").length,
+      partial: executionOrders.filter((order) => order.status === "partial").length,
+      cancelled: executionOrders.filter((order) => order.status === "cancelled").length,
+    },
+    alerting: {
+      webhookConfigured: !!process.env.ALERT_WEBHOOK_URL?.trim(),
+      healthProtected: !!process.env.HEALTH_SECRET?.trim(),
+    },
+  };
 }
