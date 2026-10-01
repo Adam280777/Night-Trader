@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, inArray, isNotNull, notInArray, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import { getEnvConfig, getSettings } from "./config";
-import { getAccountState, pnlWindows, tryClient, type AccountState } from "./account";
+import { getDashboardAccountState, pnlWindows, tryClient, type AccountState } from "./account";
 import { getActiveLessons, getPerformanceStats } from "./quant/memory";
 import { getModelReport } from "./quant/learn";
 import { strategyRisk } from "./quant/evaluation";
@@ -28,7 +28,7 @@ export async function getEnvStatus() {
 
 export async function getAccountSafe(): Promise<{ account: AccountState | null; error?: string }> {
   try {
-    return { account: await getAccountState(await tryClient()) };
+    return { account: await getDashboardAccountState(await tryClient()) };
   } catch (err) {
     return { account: null, error: String(err).slice(0, 200) };
   }

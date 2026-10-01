@@ -21,6 +21,10 @@ a second browser confirmation. Trading and full resets are refused while a posit
 broker order exists, and all resets wait for the shared scheduler lease before changing data. Any trading, research,
 or full reset also turns on the kill switch so erased loss history or model state cannot immediately permit a new trade.
 
+Dashboard-only account summaries are cached briefly in the shared database so clustered page refreshes do not queue
+behind Trading 212's per-endpoint rate limit. Order sizing and every execution guardrail bypass this display cache and
+continue to request authoritative account data immediately before trading.
+
 **No AI provider, no AI API keys, no per-run cost.** Every decision is made by a quantitative engine that runs inside
 the app: a logistic model trained on the app's own past outcomes, conditional historical analogues of each stock's
 own behaviour, a free headline sentiment engine, and rules mined from the outcome history. Market data and news come

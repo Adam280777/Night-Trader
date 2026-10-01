@@ -178,8 +178,15 @@ async function ensureRun(market: Market, deps: SchedulerDeps): Promise<EnsureSta
   const now = deps.now();
   const db = getDb();
 
-  const session = currentOrNextSession(await getMarketSessions(client, market), now);
-  if (!session) return { text: "No upcoming session in the Trading 212 schedule", notable: true };
+  const sessions = await getMarketSessions(client, market);
+  const session = currentOrNextSession(sessions, now);
+  if (!session) {
+    const latestClose = sessions.at(-1)?.close;
+    if (latestClose && latestClose <= now) {
+      return { text: `Trading 212 schedule ends at ${hhmm(latestClose.getTime())}; waiting for the next session` };
+    }
+    return { text: "Trading 212 returned no market sessions", notable: true };
+  }
   const start = session.close.getTime() - minutes(settings.minutesBeforeCloseToResearch);
   const end = session.close.getTime() - minutes(settings.minutesBeforeCloseToBuy + 2);
   if (now < session.open) return { text: `Market opens ${hhmm(session.open.getTime())}; run window ${hhmm(start)}-${hhmm(end)}` };
