@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentOrNextSession, nextSessionAfter, sessionsFromEvents } from "./calendar";
+import { currentOrNextSession, nextSessionAfter, sessionsFromEvents, unavailableSession } from "./calendar";
 
 const ev = (type: "OPEN" | "CLOSE" | "BREAK_START" | "BREAK_END", date: string) => ({ type, date });
 
@@ -30,5 +30,16 @@ describe("calendar", () => {
     const now = new Date("2026-09-29T19:30:00Z");
     expect(currentOrNextSession(sessions, now)?.close.toISOString()).toBe("2026-09-29T20:00:00.000Z");
     expect(nextSessionAfter(sessions, now)?.open.toISOString()).toBe("2026-09-30T13:30:00.000Z");
+  });
+
+  it("distinguishes a closed published schedule from missing future sessions", () => {
+    expect(unavailableSession(sessions, new Date("2026-10-01T20:53:00Z"))).toEqual({
+      reason: "closed",
+      latestClose: new Date("2026-09-30T18:00:00Z"),
+    });
+    expect(unavailableSession([], new Date("2026-10-01T20:53:00Z"))).toEqual({
+      reason: "unpublished",
+      latestClose: null,
+    });
   });
 });

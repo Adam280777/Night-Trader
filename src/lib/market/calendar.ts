@@ -31,6 +31,14 @@ export function currentOrNextSession(sessions: Session[], now: Date): Session | 
   return sessions.find((s) => s.close > now) ?? null;
 }
 
+export function unavailableSession(sessions: Session[], now: Date): { reason: "closed" | "unpublished"; latestClose: Date | null } {
+  const latestClose = sessions.at(-1)?.close ?? null;
+  return {
+    reason: latestClose && latestClose <= now ? "closed" : "unpublished",
+    latestClose,
+  };
+}
+
 /** First session that opens strictly after `after` (the exit session for a position bought before `after`). */
 export function nextSessionAfter(sessions: Session[], after: Date): Session | null {
   return sessions.find((s) => s.open > after) ?? null;

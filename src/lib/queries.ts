@@ -2,8 +2,10 @@ import { and, asc, desc, eq, inArray, isNotNull, notInArray, sql } from "drizzle
 import { getDb, schema } from "./db";
 import { getEnvConfig, getSettings } from "./config";
 import { getDashboardAccountState, pnlWindows, tryClient, type AccountState } from "./account";
-import { getActiveLessons, getDailyAfterCostAttribution, getPerformanceStats } from "./quant/memory";
+import { getActiveLessons, getPerformanceAttribution, getPerformanceStats } from "./quant/memory";
+import { getLatestDailyOperationalReviews } from "./quant/daily-review";
 import { getModelReport } from "./quant/learn";
+import { governanceReport, type ModelScope } from "./quant/governance";
 import { strategyRisk } from "./quant/evaluation";
 
 const { runs, decisions, trades, candidates, orders, equitySnapshots, eventLog, lessons } = schema;
@@ -97,7 +99,7 @@ export async function getRunDetail(runId: number) {
 
 export async function getLearning() {
   const db = getDb();
-  const [stats, closed, scored, noTrade, active, model, attribution] = await Promise.all([
+  const [stats, closed, scored, noTrade, active, model, attribution, dailyReviews, governanceReports] = await Promise.all([
     getPerformanceStats(),
     db
       .select({ date: runs.tradingDate, ticker: trades.ticker, pnlPct: trades.pnlPct, confidence: decisions.confidence, expected: decisions.expectedMovePct })
@@ -115,9 +117,22 @@ export async function getLearning() {
     db.select({ id: runs.id }).from(runs).where(inArray(runs.status, ["no_trade", "blocked"])),
     getActiveLessons(100),
     getModelReport(),
-    getDailyAfterCostAttribution(),
+    getPerformanceAttribution(),
+    getLatestDailyOperationalReviews(7),
+    Promise.all((["shared", "US", "UK"] as ModelScope[]).map((scope) => governanceReport(scope))),
   ]);
-  return { stats, closed, scored, lessons: active, noTradeDays: noTrade.length, model, attribution, risk: strategyRisk(closed.map((row) => row.pnlPct ?? NaN)) };
+  return {
+    stats,
+    closed,
+    scored,
+    lessons: active,
+    noTradeDays: noTrade.length,
+    model,
+    attribution,
+    dailyReviews,
+    governanceReports: governanceReports.filter((report): report is NonNullable<typeof report> => report != null),
+    risk: strategyRisk(closed.map((row) => row.pnlPct ?? NaN)),
+  };
 }
 
 export async function getSettingsView() {

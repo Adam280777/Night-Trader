@@ -68,6 +68,7 @@ export interface StudiedSymbol {
 export interface ActivityFeedData {
   now: number;
   heartbeatAt: number | null;
+  schedulerSource: "http-cron" | "persistent-worker" | "manual" | null;
   killSwitch: boolean;
   tradingEnabled: boolean;
   continuousResearch: boolean;
@@ -115,6 +116,7 @@ export async function getActivityFeed(): Promise<ActivityFeedData> {
 
   const events = await db.select().from(eventLog).orderBy(desc(eventLog.id)).limit(120);
   const [heartbeat] = await db.select().from(settingsTable).where(eq(settingsTable.key, "_heartbeat"));
+  const [heartbeatSource] = await db.select().from(settingsTable).where(eq(settingsTable.key, "_heartbeat_source"));
   const stats = await knowledgeStats();
   const studied = await recentlyStudied(14);
 
@@ -129,6 +131,10 @@ export async function getActivityFeed(): Promise<ActivityFeedData> {
   return {
     now: Date.now(),
     heartbeatAt: typeof heartbeat?.value === "number" ? heartbeat.value : null,
+    schedulerSource:
+      heartbeatSource?.value === "http-cron" || heartbeatSource?.value === "persistent-worker" || heartbeatSource?.value === "manual"
+        ? heartbeatSource.value
+        : null,
     killSwitch: s.killSwitch,
     tradingEnabled: s.tradingEnabled,
     continuousResearch: s.quant.continuousResearch,

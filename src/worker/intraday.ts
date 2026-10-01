@@ -5,7 +5,7 @@ import { analyseIntraday } from "../lib/intraday/strategy";
 import { selectUniverse, type UniverseSymbol } from "../lib/intraday/universe";
 import { overlappingOvernightRun } from "../lib/intraday/coordination";
 import { log } from "../lib/log";
-import { getIntradayBars, getValidatedQuotes, yahooSymbol } from "../lib/market/data";
+import { fxRate, getIntradayBars, getValidatedQuotes, yahooSymbol } from "../lib/market/data";
 import type { Session } from "../lib/market/calendar";
 import { tradingDateOf } from "../lib/market/sessions";
 import { estimatedRoundTripCostPct } from "../lib/risk/guardrails";
@@ -15,6 +15,7 @@ import { tryClient } from "../lib/account";
 import { provenSymbols } from "../lib/quant/knowledge";
 import { executeBuy } from "./execute";
 import { setRunStatus } from "./pipeline";
+import { executionCosts, priceAndFxAttribution } from "../lib/execution-attribution";
 
 const { runs, decisions, candidates, trades, orders } = schema;
 type Run = typeof runs.$inferSelect;
@@ -345,19 +346,67 @@ async function closeIntradayTrade(
   const grossPct = exitPrice && entry ? (exitPrice / entry - 1) * 100 : null;
   const cost = estimatedRoundTripCostPct(run.market, (await getSettings()).quant);
   const pnlPct = grossPct == null ? null : run.mode === "dry" ? grossPct - cost : grossPct;
-  // Broker wallet impact is authoritative across currencies and fees. Do not invent a cash P&L.
-  const pnl = realisedPnl;
+  let exitFxRate = trade.entryFxRate;
+  if (trade.instrumentCurrency && trade.accountCurrency) {
+    try {
+      exitFxRate = await fxRate(trade.instrumentCurrency, trade.accountCurrency);
+    } catch {
+      exitFxRate = null;
+    }
+  }
+  const attribution =
+    entry != null && exitPrice != null && trade.entryFxRate != null && exitFxRate != null && trade.instrumentCurrency
+      ? priceAndFxAttribution({
+          quantity: trade.quantity,
+          entryPrice: entry,
+          exitPrice,
+          instrumentCurrency: trade.instrumentCurrency,
+          entryFxRate: trade.entryFxRate,
+          exitFxRate,
+        })
+      : { grossPnl: null, fxImpact: null };
+  const filledOrders = await getDb().select().from(orders).where(eq(orders.runId, run.id));
+  const costs =
+    trade.instrumentCurrency && trade.entryFxRate != null && exitFxRate != null
+      ? executionCosts(filledOrders, trade.instrumentCurrency, trade.entryFxRate, exitFxRate)
+      : { estimatedSpreadCost: trade.estimatedSpreadCost, slippageCost: trade.slippageCost };
+  const benchmarkReturnPct = await intradayBenchmarkReturn(run.market, trade.entryAt, new Date());
+  const simulatedPnl =
+    run.mode === "dry" && entry != null && pnlPct != null && trade.entryFxRate != null && trade.instrumentCurrency
+      ? trade.quantity * (trade.instrumentCurrency === "GBX" ? entry / 100 : entry) * trade.entryFxRate * pnlPct / 100
+      : null;
+  // Broker wallet impact remains authoritative for real fills; dry mode is explicitly labelled simulation.
+  const pnl = run.mode === "dry" ? simulatedPnl : realisedPnl;
   await getDb().update(trades).set({
     status: "closed",
     exitAt: new Date(),
     exitPrice,
     pnlPct,
     pnl,
+    exitFxRate,
+    grossPnl: attribution.grossPnl,
+    estimatedSpreadCost: costs.estimatedSpreadCost,
+    slippageCost: costs.slippageCost,
+    fxImpact: attribution.fxImpact,
+    benchmarkReturnPct,
+    selectionReturnPct: benchmarkReturnPct == null || grossPct == null ? null : grossPct - benchmarkReturnPct,
     exitReason,
     review: `Intraday ${exitReason}: ${pnlPct == null ? "return unavailable" : `${pnlPct.toFixed(2)}% net return`}.`,
   }).where(eq(trades.id, trade.id));
   await setRunStatus(run.id, "closed");
   await log("info", "intraday", `Closed ${trade.ticker} (${exitReason}) at ${exitPrice ?? "unknown"}; ${pnlPct?.toFixed(2) ?? "n/a"}%.`, run.id);
+}
+
+async function intradayBenchmarkReturn(market: Market, entryAt: Date | null, exitAt: Date): Promise<number | null> {
+  if (!entryAt) return null;
+  try {
+    const bars = await getIntradayBars(market === "US" ? "^GSPC" : "^FTSE", 2);
+    const entryBar = bars.filter((bar) => bar.date <= entryAt).at(-1) ?? bars.find((bar) => bar.date >= entryAt);
+    const exitBar = bars.filter((bar) => bar.date <= exitAt).at(-1);
+    return entryBar && exitBar && entryBar.close > 0 ? (exitBar.close / entryBar.close - 1) * 100 : null;
+  } catch {
+    return null;
+  }
 }
 
 async function manageIntradayExit(run: Run, now: Date): Promise<void> {

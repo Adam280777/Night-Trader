@@ -8,6 +8,7 @@ import { quantityFor, unitCostInAccountCcy } from "../lib/risk/sizing";
 import { adverseSlippagePct, findHistorical, submitMarketOrder, waitForOrder } from "../lib/t212/safeOrder";
 import { checkDecisionGuardrails } from "./guard";
 import { setRunStatus } from "./pipeline";
+import { executionCosts } from "../lib/execution-attribution";
 
 const { runs, decisions, trades, candidates, orders } = schema;
 
@@ -95,6 +96,7 @@ export async function executeBuy(runId: number): Promise<void> {
 
     let entryPrice = quote.price;
     let filledQty = qty;
+    let entrySlippagePct: number | null = null;
 
     if (run.mode !== "dry") {
       const client = await tryClient();
@@ -142,6 +144,7 @@ export async function executeBuy(runId: number): Promise<void> {
         if (pos) entryPrice = pos.averagePricePaid;
       }
       const slippagePct = adverseSlippagePct("BUY", quote.price, entryPrice);
+      entrySlippagePct = slippagePct;
       await db.update(orders).set({ status: done?.status === "FILLED" ? "filled" : "partial", filledQuantity: filledQty, fillPrice: entryPrice, slippagePct }).where(eq(orders.id, sub.orderRowId)).run();
       const maxSlippagePct = settings.ops.maxSlippagePct;
       if (slippagePct > maxSlippagePct) {
@@ -155,6 +158,20 @@ export async function executeBuy(runId: number): Promise<void> {
     }
 
     const intraday = run.strategy === "intraday_momentum" ? settings.intraday : null;
+    const entryCosts = executionCosts(
+      [{
+        side: "BUY",
+        quantity: filledQty,
+        filledQuantity: filledQty,
+        referencePrice: quote.price,
+        spreadPct: quote.spreadPct,
+        slippagePct: entrySlippagePct,
+      }],
+      instrument.currencyCode,
+      fx,
+      fx,
+    );
+    const entryNotional = filledQty * unitCostInAccountCcy(entryPrice, instrument.currencyCode, fx);
     await db.insert(trades)
       .values({
         runId,
@@ -171,6 +188,12 @@ export async function executeBuy(runId: number): Promise<void> {
         trailingStopPct: intraday?.trailingStopPct ?? null,
         highWatermark: intraday ? entryPrice : null,
         plannedExitAt: intraday ? new Date(Date.now() + intraday.maxHoldMinutes * 60_000) : null,
+        instrumentCurrency: instrument.currencyCode,
+        accountCurrency: account.currency,
+        entryFxRate: fx,
+        estimatedSpreadCost: entryCosts.estimatedSpreadCost,
+        stampDutyCost: run.market === "UK" ? entryNotional * 0.005 : 0,
+        slippageCost: entryCosts.slippageCost,
       })
       .run();
     setRunStatus(runId, "holding");

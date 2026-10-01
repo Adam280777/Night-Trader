@@ -13,7 +13,8 @@
     "predev": "tsx --env-file-if-exists=.env.local scripts/migrate.ts",
     "prebuild": "tsx --env-file-if-exists=.env.local scripts/migrate.ts",
     "db:migrate": "tsx --env-file-if-exists=.env.local scripts/migrate.ts",
-    "tick": "tsx --env-file-if-exists=.env.local scripts/tick.ts"
+    "tick": "tsx --env-file-if-exists=.env.local scripts/tick.ts",
+    "worker": "tsx --env-file-if-exists=.env.local scripts/worker.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",

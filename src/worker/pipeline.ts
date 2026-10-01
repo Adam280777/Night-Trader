@@ -11,7 +11,8 @@ import { freshResearchOf, getKnowledge, provenSymbols, recordResearch } from "..
 import type { QuantTuning } from "../lib/quant/tuning";
 import { getRegime } from "../lib/quant/regime";
 import { decide } from "../lib/quant/decide";
-import { loadModel } from "../lib/quant/model";
+import { predict } from "../lib/quant/model";
+import { governedModels, persistForwardEvidence } from "../lib/quant/governance";
 import { loadRules } from "../lib/quant/rules";
 import { deserializeAnalogue, type AnalogueSnapshot } from "../lib/quant/analogues";
 import type { MarketContext, Research, Source } from "../lib/quant/schemas";
@@ -248,19 +249,56 @@ export async function stageDecide(runId: number): Promise<void> {
     const acct = await getAccountState(client);
     const minConfidence = run.market === "UK" ? Math.max(settings.minConfidence, settings.ukMinConfidence) : settings.minConfidence;
 
-    const { decision, evaluated, chosen } = decide({
+    const models = await governedModels(run.market);
+    const decisionInput = {
       market: run.market,
       candidates: inputs.map(({ candidate, research, analogue }) => ({ candidate, research, analogue })),
       context: marketCtx,
-      model: await loadModel(),
       rules: await loadRules(),
       account: { totalValue: acct.totalValue, availableCash: acct.availableCash, currency: acct.currency },
       minutesToClose: minutesToClose(),
       minConfidence,
       minEdgePct: settings.minExpectedEdgePct,
       tuning: settings.quant,
-      forceTrade: run.mode === "demo" && settings.demoForceTrade ? { investPct: settings.demoForceInvestPct } : undefined,
+    } as const;
+    const championEvidence = decide({ ...decisionInput, model: models.champion.state });
+    const execution = run.mode === "demo" && settings.demoForceTrade
+      ? decide({ ...decisionInput, model: models.champion.state, forceTrade: { investPct: settings.demoForceInvestPct } })
+      : championEvidence;
+    const { decision, evaluated, chosen } = execution;
+
+    const evidenceRows = (
+      output: typeof championEvidence,
+      model: typeof models.champion.state,
+    ) => output.evaluated.map((item) => {
+      const row = inputs.find((input) => input.row.ticker === item.evaluation.ticker)!.row;
+      return {
+        candidateId: row.id,
+        probability: item.evaluation.probability,
+        rawProbability: predict(model, item.features).raw,
+        expectedAfterCostPct: item.evaluation.edgePct,
+        costPct: item.evaluation.costPct,
+        selected: output.decision.ticker === row.ticker,
+        predictedTrade: output.decision.action === "BUY" && output.decision.ticker === row.ticker,
+      };
     });
+    await persistForwardEvidence({
+      runId,
+      market: run.market,
+      versionId: models.champion.id,
+      kind: "champion",
+      rows: evidenceRows(championEvidence, models.champion.state),
+    });
+    if (models.challenger) {
+      const shadow = decide({ ...decisionInput, model: models.challenger.state });
+      await persistForwardEvidence({
+        runId,
+        market: run.market,
+        versionId: models.challenger.id,
+        kind: "shadow",
+        rows: evidenceRows(shadow, models.challenger.state),
+      });
+    }
 
     // Persist every candidate's feature vector and evaluation: this is tomorrow's training data.
     const byTicker = new Map(evaluated.map((e) => [e.evaluation.ticker, e]));

@@ -7,7 +7,7 @@ import { withLock } from "../lib/locks";
 import { pruneOperationalData } from "../lib/retention";
 import { traced } from "../lib/trace";
 import { getAccountState, tryClient } from "../lib/account";
-import { currentOrNextSession, nextSessionAfter, minutes } from "../lib/market/calendar";
+import { currentOrNextSession, nextSessionAfter, minutes, unavailableSession } from "../lib/market/calendar";
 import { getMarketSessions, tradingDateOf } from "../lib/market/sessions";
 import type { Market } from "../lib/t212/instruments";
 import { setRunStatus, stageDecide, stageResearch, stageScreen } from "./pipeline";
@@ -19,6 +19,7 @@ import { studyRound } from "./study";
 import { backfillRound } from "./backfill";
 import { processIntradayRun, scanIntradayMarket } from "./intraday";
 import { findHistorical } from "../lib/t212/safeOrder";
+import { generateDailyOperationalReview } from "../lib/quant/daily-review";
 
 const { runs, decisions, trades, equitySnapshots, orders, candidates } = schema;
 
@@ -28,8 +29,9 @@ const TERMINAL_STATUSES = ["closed", "no_trade", "blocked", "failed", "skipped"]
 /** Injectable clock so the whole day can be simulated in tests. */
 export interface SchedulerDeps {
   now: () => Date;
+  source?: "http-cron" | "persistent-worker" | "manual";
 }
-const realClock: SchedulerDeps = { now: () => new Date() };
+const realClock: SchedulerDeps = { now: () => new Date(), source: "http-cron" };
 
 /** One tick may use at most this long (Vercel's function limit is 300s). */
 export const TICK_BUDGET_MS = 270_000;
@@ -229,6 +231,21 @@ async function recordEnsure(market: Market, status: EnsureStatus, nowMs: number)
   await setKv(`ensure:${market}`, { text: status.text, at: nowMs });
 }
 
+async function recordIntraday(market: Market, text: string, nowMs: number): Promise<void> {
+  const prev = await getKv<{ text: string; at: number }>(`intraday:${market}`);
+  if (prev && prev.value.text === text && nowMs - prev.value.at < 10 * 60_000) return;
+  await setKv(`intraday:${market}`, { text, at: nowMs });
+}
+
+function unavailableSessionText(sessions: { open: Date; close: Date }[], now: Date): string {
+  const status = unavailableSession(sessions, now);
+  if (status.reason === "closed" && status.latestClose) {
+    const latestClose = status.latestClose;
+    return `Market is closed; Trading 212's published schedule ended at ${hhmm(latestClose.getTime())}`;
+  }
+  return "Trading 212 has not published a current or future market session";
+}
+
 async function processRun(run: typeof runs.$inferSelect, deps: SchedulerDeps, startedAt: number): Promise<void> {
   if (run.strategy === "intraday_momentum") return processIntradayRun(run, deps.now());
   const db = getDb();
@@ -301,6 +318,10 @@ export async function tick(deps: SchedulerDeps = realClock): Promise<TickResult>
     const settings = await getSettings();
     const traceOptions = { slowMs: settings.ops.slowJobSeconds * 1000, verbose: settings.ops.verboseLogging };
     await db.insert(schema.settings).values({ key: "_heartbeat", value: nowMs }).onConflictDoUpdate({ target: schema.settings.key, set: { value: nowMs } });
+    await db
+      .insert(schema.settings)
+      .values({ key: "_heartbeat_source", value: deps.source ?? "manual" })
+      .onConflictDoUpdate({ target: schema.settings.key, set: { value: deps.source ?? "manual" } });
 
     await recover(nowMs);
 
@@ -325,36 +346,59 @@ export async function tick(deps: SchedulerDeps = realClock): Promise<TickResult>
       }
     }
 
-    if (settings.intraday.enabled && Date.now() - startedAt < TICK_BUDGET_MS - 90_000) {
-      const client = await tryClient();
-      if (client) {
-        for (const market of MARKETS) {
-          const remainingMs = TICK_BUDGET_MS - (Date.now() - startedAt);
-          if (remainingMs < 30_000) break;
-          if (!(await every(`intraday-scan:${market}`, minutes(settings.intraday.scanIntervalMinutes), nowMs))) continue;
-          try {
-            const session = currentOrNextSession(await getMarketSessions(client, market), deps.now());
-            if (!session) continue;
-            const scanDeadline = Date.now() + Math.min(60_000, remainingMs - 20_000);
-            const scan = await traced(`intraday-scan-${market.toLowerCase()}`, () => scanIntradayMarket(market, session, deps.now(), scanDeadline), {
-              ...traceOptions,
-              detail: (value) => ({
-                created: value.created,
-                message: value.message,
-                candidates: value.candidates,
-                source: value.source,
-                charted: value.charted,
-              }),
-              summary: (value) => value.message,
-            });
-            if (scan.ok) {
-              await setKv(`intraday:${market}`, { text: scan.value.message, at: nowMs });
-              if (scan.value.created) await log("info", "scheduler", scan.value.message);
-            }
-          } catch (err) {
-            await warnOnce(`intraday:${market}`, `Intraday ${market} scan failed: ${String(err).slice(0, 200)}`, undefined, nowMs);
-          }
+    const intradayClient = settings.intraday.enabled ? await tryClient() : null;
+    for (const market of MARKETS) {
+      const marketEnabled = market === "US" ? settings.intraday.usEnabled : settings.intraday.ukEnabled;
+      if (!settings.intraday.enabled) {
+        await recordIntraday(market, "Intraday strategy is switched off in Settings", nowMs);
+        continue;
+      }
+      if (!marketEnabled) {
+        await recordIntraday(market, `${market} intraday is switched off in Settings`, nowMs);
+        continue;
+      }
+      if (settings.killSwitch) {
+        await recordIntraday(market, "Kill switch is on; new intraday entries are paused", nowMs);
+        continue;
+      }
+      if (!intradayClient) {
+        await recordIntraday(market, "Trading 212 credentials are required", nowMs);
+        continue;
+      }
+
+      const remainingMs = TICK_BUDGET_MS - (Date.now() - startedAt);
+      if (remainingMs < 90_000) {
+        await recordIntraday(market, "Deferred because higher-priority trading work used this tick's time budget", nowMs);
+        continue;
+      }
+      try {
+        const sessions = await getMarketSessions(intradayClient, market);
+        const session = currentOrNextSession(sessions, deps.now());
+        if (!session) {
+          await recordIntraday(market, unavailableSessionText(sessions, deps.now()), nowMs);
+          continue;
         }
+        if (!(await every(`intraday-scan:${market}`, minutes(settings.intraday.scanIntervalMinutes), nowMs))) continue;
+        const scanDeadline = Date.now() + Math.min(60_000, remainingMs - 20_000);
+        const scan = await traced(`intraday-scan-${market.toLowerCase()}`, () => scanIntradayMarket(market, session, deps.now(), scanDeadline), {
+          ...traceOptions,
+          detail: (value) => ({
+            created: value.created,
+            message: value.message,
+            candidates: value.candidates,
+            source: value.source,
+            charted: value.charted,
+          }),
+          summary: (value) => value.message,
+        });
+        if (scan.ok) {
+          await recordIntraday(market, scan.value.message, nowMs);
+          if (scan.value.created) await log("info", "scheduler", scan.value.message);
+        }
+      } catch (err) {
+        const message = `Intraday ${market} check failed: ${String(err).slice(0, 180)}`;
+        await recordIntraday(market, message, nowMs);
+        await warnOnce(`intraday:${market}`, message, undefined, nowMs);
       }
     }
 
@@ -385,6 +429,22 @@ export async function tick(deps: SchedulerDeps = realClock): Promise<TickResult>
             const { trained, activeRules } = learningResult.value;
             await log("info", "learning", `Trained on ${trained} new outcome(s); ${activeRules} rule(s) active.`);
           }
+        }
+        const reviewDate = tradingDateOf("US", deps.now());
+        if (deps.now().getUTCHours() >= 21 && (await every(`daily-review:${reviewDate}`, 60 * 60_000, nowMs))) {
+          await traced("daily-operational-review", () => generateDailyOperationalReview({ date: reviewDate, now: deps.now() }), {
+            ...traceOptions,
+            detail: (value) => ({ date: value.date, revision: value.revision, unusual: value.unusual.length }),
+            summary: (value) => `${value.date} revision ${value.revision}`,
+          });
+        }
+        if (newOutcomes > 0) {
+          const priorDate = tradingDateOf("US", new Date(nowMs - 86_400_000));
+          await traced("refresh-prior-daily-review", () => generateDailyOperationalReview({ date: priorDate, now: deps.now() }), {
+            ...traceOptions,
+            detail: (value) => ({ date: value.date, revision: value.revision, refreshedForOutcomes: true }),
+            summary: (value) => `${value.date} refreshed after outcomes`,
+          });
         }
         if (await every("retention", 12 * 3_600_000, nowMs)) {
           await traced("retention", () => pruneOperationalData(settings.ops, nowMs), {

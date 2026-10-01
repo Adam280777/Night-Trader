@@ -86,7 +86,10 @@ export function ActivityFeed({ initial }: { initial: Feed }) {
           {beatStale ? (
             <span className="text-danger">The scheduler has not checked in{beat ? ` since ${ago(beat, now)}` : " yet"}.</span>
           ) : (
-            <span className="text-muted">Scheduler checked in {ago(beat, now)}.</span>
+            <span className="text-muted">
+              Scheduler checked in {ago(beat, now)}
+              {feed.schedulerSource ? ` via ${feed.schedulerSource.replaceAll("-", " ")}` : ""}.
+            </span>
           )}
           {failed && <span className="text-warn">· could not refresh</span>}
         </span>

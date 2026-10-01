@@ -7,7 +7,7 @@ async function main() {
   const { ensureMigrated } = await import("../src/lib/db");
   const { tick } = await import("../src/worker/scheduler");
   await ensureMigrated();
-  console.log(await tick());
+  console.log(await tick({ now: () => new Date(), source: "manual" }));
 }
 main().catch((e) => {
   console.error(e);

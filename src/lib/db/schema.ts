@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 const id = () => integer("id").primaryKey({ autoIncrement: true });
 const createdAt = () =>
@@ -161,6 +161,17 @@ export const trades = sqliteTable("trades", {
   plannedExitAt: integer("planned_exit_at", { mode: "timestamp_ms" }),
   exitReason: text("exit_reason"),
   review: text("review"),
+  instrumentCurrency: text("instrument_currency"),
+  accountCurrency: text("account_currency"),
+  entryFxRate: real("entry_fx_rate"),
+  exitFxRate: real("exit_fx_rate"),
+  grossPnl: real("gross_pnl"),
+  estimatedSpreadCost: real("estimated_spread_cost"),
+  stampDutyCost: real("stamp_duty_cost"),
+  slippageCost: real("slippage_cost"),
+  fxImpact: real("fx_impact"),
+  benchmarkReturnPct: real("benchmark_return_pct"),
+  selectionReturnPct: real("selection_return_pct"),
   createdAt: createdAt(),
 });
 
@@ -202,6 +213,103 @@ export const modelState = sqliteTable("model_state", {
     .notNull()
     .$defaultFn(() => new Date()),
 });
+
+export type ModelTrainingMetrics = {
+  calibrationError: number | null;
+  brier: number | null;
+  baselineBrier: number | null;
+  meanAfterCostReturnPct: number | null;
+  maxDrawdownPct: number | null;
+  predictedTradeFrequency: number | null;
+};
+
+/** Immutable snapshots. Training never overwrites a model version. */
+export const modelVersions = sqliteTable(
+  "model_versions",
+  {
+    id: id(),
+    modelName: text("model_name").notNull(),
+    scope: text("scope", { enum: ["shared", "US", "UK"] }).notNull(),
+    parentVersionId: integer("parent_version_id"),
+    state: text("state", { mode: "json" }).notNull(),
+    samples: integer("samples").notNull(),
+    trainingFrom: text("training_from").notNull(),
+    trainingTo: text("training_to").notNull(),
+    firstCandidateId: integer("first_candidate_id"),
+    lastCandidateId: integer("last_candidate_id"),
+    settingsFingerprint: text("settings_fingerprint").notNull(),
+    settings: text("settings", { mode: "json" }).notNull(),
+    metrics: text("metrics", { mode: "json" }).$type<ModelTrainingMetrics>().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("model_versions_scope_created").on(t.modelName, t.scope, t.createdAt)],
+);
+
+/** The only table consulted when choosing an execution model. */
+export const modelDeployments = sqliteTable("model_deployments", {
+  scope: text("scope", { enum: ["shared", "US", "UK"] }).primaryKey(),
+  championVersionId: integer("champion_version_id")
+    .notNull()
+    .references(() => modelVersions.id),
+  challengerVersionId: integer("challenger_version_id").references(() => modelVersions.id),
+  previousChampionVersionId: integer("previous_champion_version_id").references(() => modelVersions.id),
+  promotedAt: integer("promoted_at", { mode: "timestamp_ms" }),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+/**
+ * Forward evidence is deliberately isolated from candidates/trades. Shadow rows are never read by
+ * execution or live performance reporting.
+ */
+export const modelEvidence = sqliteTable(
+  "model_evidence",
+  {
+    id: id(),
+    modelVersionId: integer("model_version_id")
+      .notNull()
+      .references(() => modelVersions.id),
+    runId: integer("run_id")
+      .notNull()
+      .references(() => runs.id),
+    candidateId: integer("candidate_id")
+      .notNull()
+      .references(() => candidates.id),
+    market: text("market", { enum: ["US", "UK"] }).notNull(),
+    kind: text("kind", { enum: ["champion", "shadow"] }).notNull(),
+    probability: real("probability").notNull(),
+    rawProbability: real("raw_probability").notNull(),
+    expectedAfterCostPct: real("expected_after_cost_pct").notNull(),
+    costPct: real("cost_pct").notNull(),
+    selected: integer("selected", { mode: "boolean" }).notNull().default(false),
+    predictedTrade: integer("predicted_trade", { mode: "boolean" }).notNull().default(false),
+    actualReturnPct: real("actual_return_pct"),
+    actualAfterCostPct: real("actual_after_cost_pct"),
+    outcome: integer("outcome", { mode: "boolean" }),
+    predictedAt: createdAt(),
+    observedAt: integer("observed_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [
+    uniqueIndex("model_evidence_version_candidate").on(t.modelVersionId, t.candidateId),
+    index("model_evidence_version_observed").on(t.modelVersionId, t.observedAt),
+  ],
+);
+
+export const modelGovernanceEvents = sqliteTable(
+  "model_governance_events",
+  {
+    id: id(),
+    scope: text("scope", { enum: ["shared", "US", "UK"] }).notNull(),
+    action: text("action", { enum: ["challenger_created", "promoted", "rolled_back"] }).notNull(),
+    fromVersionId: integer("from_version_id").references(() => modelVersions.id),
+    toVersionId: integer("to_version_id").references(() => modelVersions.id),
+    reason: text("reason").notNull(),
+    evidence: text("evidence", { mode: "json" }).$type<ModelTrainingMetrics | null>(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("model_governance_events_scope").on(t.scope, t.createdAt)],
+);
 
 export const equitySnapshots = sqliteTable("equity_snapshots", {
   id: id(),

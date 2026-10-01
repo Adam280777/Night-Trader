@@ -92,10 +92,30 @@ every few seconds and can be paused.
 
 The dashboard shows both strategy modules, their run/trade evidence, the active strategy, position stop/target
 information, an equity curve, run-outcome breakdown, and return calendar. The **Learning** page remains explicitly
-about the overnight model and adds its return distribution, model reliability plot, and weight comparison while
-retaining the underlying tables. **Logs** exposes searchable
+about the overnight model and adds its return distribution, model reliability plot, weight comparison, immutable
+model versions, champion/challenger forward evidence, promotion readiness, daily attribution, and operational reviews
+while retaining the underlying tables. **Logs** exposes searchable
 structured context and CSV export. **System health** shows scheduler heartbeat, job success and duration, recent
 failures, log volume, and database growth.
+
+Every trained overnight model is stored as an immutable version with its training window, candidate range, tuning
+snapshot/fingerprint, scope and evaluation metrics. Shared, US and UK deployments identify one execution champion
+and an optional shadow challenger. Shadow predictions are stored in a dedicated evidence table and can never create
+orders or enter live trade totals. Manual promotion requires minimum forward evidence and must pass calibration,
+Brier, after-cost return, drawdown and trade-frequency checks. Promotion is never automatic. A promoted version keeps
+its predecessor available and automatically rolls back only after enough comparable forward outcomes show material
+deterioration. Every promotion and rollback is audited.
+
+Attribution keeps live, demo, dry-run, historical replay and shadow evidence separate. Where the underlying data is
+available it reports gross price P&L, estimated spread, UK stamp duty, actual adverse slippage, FX impact,
+broker-authoritative net cash P&L, benchmark direction and stock-selection contribution. Missing historical
+components stay explicitly unavailable rather than being inferred. New trades capture the currency, FX and execution
+fields needed to improve this coverage over time.
+
+The scheduler generates a revisioned daily operational review after the US close and refreshes the prior review when
+new overnight outcomes arrive. It records candidates considered, trades and abstentions, guardrails, data freshness,
+provider/API failures, expected versus actual movement, slippage, model calibration and unusual conditions. Reports
+are idempotent and persist in Turso for long-term review.
 
 Operational settings control snapshot, outcome, learning and backfill cadence; log, job and equity retention;
 the worker-offline and slow-job thresholds; and successful-job verbosity. Background-job timings and failures are
@@ -134,6 +154,27 @@ on demand and start fresh after a few hours of quiet.
   Each call first recovers interrupted work and manages open positions, then advances overnight work and eligible
   intraday scans, and finally runs housekeeping. Work resumes safely if interrupted. Any time
   left over at the end of a call goes to studying the universe, so the knowledge base grows on the same timer.
+
+The Live activity page reports whether its latest heartbeat came from the HTTP cron, a manual tick, or the optional
+persistent worker. It also retains an explicit status for every overnight and intraday market, including disabled
+markets, exhausted broker schedules, missing credentials, safety pauses, and work deferred behind higher-priority
+position management.
+
+### Optional persistent worker
+
+The Vercel deployment remains the supported zero-server default. For more predictable timing and connection reuse,
+the same scheduler can also run as a persistent background process:
+
+```
+npm run worker
+```
+
+`Dockerfile.worker` packages that process for a background-worker host. Give it the same Turso, Trading 212, FMP,
+encryption and alert environment variables as Vercel. `WORKER_INTERVAL_SECONDS` accepts 30-300 seconds and defaults
+to 60. The database lease makes it safe to leave the HTTP cron enabled during migration or as failover: only one
+scheduler tick can perform work at a time. A persistent container cannot be hosted as an always-running process by
+the existing Vercel Functions deployment, so it still requires a worker-capable host. The dashboard and authenticated
+APIs can remain on Vercel.
 
 ## Deploy
 

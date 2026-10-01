@@ -3,6 +3,7 @@ import { getDb, schema } from "../lib/db";
 import { log } from "../lib/log";
 import { getDailyBars } from "../lib/market/data";
 import { tradingDateOf } from "../lib/market/sessions";
+import { attachOutcomes, autoRollbackIfDeteriorated } from "../lib/quant/governance";
 
 const { candidates, runs } = schema;
 
@@ -26,6 +27,8 @@ export async function scoreOutcomes(onlyRunId?: number): Promise<number> {
 
   const barsCache = new Map<string, Awaited<ReturnType<typeof getDailyBars>>>();
   let scored = 0;
+  const scoredIds: number[] = [];
+  const scoredMarkets = new Set<"US" | "UK">();
   for (const { c, run } of rows) {
     const yahoo = (c.signals as Record<string, string> | null)?.yahoo;
     if (!yahoo) continue;
@@ -45,9 +48,14 @@ export async function scoreOutcomes(onlyRunId?: number): Promise<number> {
         .where(eq(candidates.id, c.id))
         .run();
       scored++;
+      scoredIds.push(c.id);
+      scoredMarkets.add(run.market);
     } catch (err) {
       await log("warn", "outcomes", `Could not score ${c.ticker}: ${String(err).slice(0, 150)}`, run.id);
     }
   }
+  await attachOutcomes(scoredIds);
+  for (const market of scoredMarkets) await autoRollbackIfDeteriorated(market);
+  if (scoredIds.length) await autoRollbackIfDeteriorated("shared");
   return scored;
 }

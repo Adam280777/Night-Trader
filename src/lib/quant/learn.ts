@@ -15,7 +15,7 @@ import { and, asc, desc, eq, gt, isNotNull } from "drizzle-orm";
 import { getDb, schema } from "../db";
 import { breakEvenPct, roundTripCostPct } from "./costs";
 import { FEATURES, FEATURE_BY_KEY } from "./features";
-import { diagnostics, loadModel, saveModel, train, type ModelState, type TrainingSample } from "./model";
+import { diagnostics, loadModel, predict, saveModel, train, type ModelState, type TrainingSample } from "./model";
 import { binomialPValue, clamp, logit, mean, median, shrunkRate, quantile } from "./stats";
 import type { LessonRule, MarketContext, Review } from "./schemas";
 import { DEFAULT_TUNING, type QuantTuning } from "./tuning";
@@ -24,6 +24,13 @@ import { getKv } from "../kv";
 import { accuracyOf } from "./accuracy";
 import { chronologicalEvaluation } from "./evaluation";
 import { BACKFILL_STATS_KEY, type BackfillStats } from "./backfill";
+import {
+  governanceThresholds,
+  governedChampion,
+  persistTrainedVersion,
+  trainingBase,
+  type ModelScope,
+} from "./governance";
 
 const { candidates, decisions, runs, lessons } = schema;
 
@@ -53,7 +60,7 @@ export interface LabelledRow {
   regime?: "unknown" | "calm" | "normal" | "stressed";
 }
 
-async function labelledRows(afterId = 0, tuning: QuantTuning = DEFAULT_TUNING): Promise<LabelledRow[]> {
+async function labelledRows(afterId = 0, tuning: QuantTuning = DEFAULT_TUNING, market?: "US" | "UK"): Promise<LabelledRow[]> {
   const rows = await getDb()
     .select({ c: candidates, market: runs.market, tradingDate: runs.tradingDate, marketContext: decisions.marketContext })
     .from(candidates)
@@ -87,25 +94,64 @@ async function labelledRows(afterId = 0, tuning: QuantTuning = DEFAULT_TUNING): 
         screenScore: c.screenScore,
         regime: (marketContext as MarketContext | null)?.volRegime,
       };
-    });
+    })
+    .filter((row) => !market || row.market === market);
 }
 
 /** Trains on every scored candidate not seen before. Returns how many rows were consumed. */
 export async function trainFromOutcomes(now = new Date()): Promise<{ trained: number; state: ModelState }> {
   const tuning = await getTuning();
-  const state = await loadModel();
-  const rows = await labelledRows(state.lastCandidateId, tuning);
-  if (rows.length === 0) return { trained: 0, state };
+  let sharedState = (await trainingBase("shared")).state;
+  let sharedTrained = 0;
+  const scopes: ModelScope[] = ["shared", "US", "UK"];
 
-  const samples: TrainingSample[] = rows.map((r) => ({
-    features: r.features,
-    label: r.label,
-    weight: liveOutcomeWeight(r.tradingDate, now),
-  }));
-  const next = train(state, samples, tuning);
-  next.lastCandidateId = Math.max(state.lastCandidateId, ...rows.map((r) => r.id));
-  await saveModel(next);
-  return { trained: rows.length, state: next };
+  for (const scope of scopes) {
+    const base = await trainingBase(scope);
+    const market = scope === "shared" ? undefined : scope;
+    const rows = await labelledRows(base.state.lastCandidateId, tuning, market);
+    if (!rows.length) continue;
+    if (market) {
+      const total = await labelledRows(0, tuning, market);
+      if (total.length < governanceThresholds().marketTrainingSamples) continue;
+    }
+
+    const samples: TrainingSample[] = rows.map((row) => ({
+      features: row.features,
+      label: row.label,
+      weight: liveOutcomeWeight(row.tradingDate, now),
+    }));
+    const positives = rows.filter((row) => row.label).length / rows.length;
+    const brier = rows.reduce((sum, row) => {
+      const probability = predict(base.state, row.features).probability;
+      return sum + (probability - (row.label ? 1 : 0)) ** 2;
+    }, 0) / rows.length;
+    const baselineBrier = rows.reduce((sum, row) => sum + (positives - (row.label ? 1 : 0)) ** 2, 0) / rows.length;
+    const next = train(base.state, samples, tuning);
+    next.lastCandidateId = Math.max(base.state.lastCandidateId, ...rows.map((row) => row.id));
+    await persistTrainedVersion({
+      scope,
+      parentVersionId: base.id,
+      state: next,
+      tuning,
+      window: {
+        from: rows[0].tradingDate,
+        to: rows.at(-1)!.tradingDate,
+        firstCandidateId: rows[0].id,
+        lastCandidateId: rows.at(-1)!.id,
+      },
+      metrics: {
+        brier,
+        baselineBrier,
+        meanAfterCostReturnPct: rows.reduce((sum, row) => sum + row.returnPct - row.costPct, 0) / rows.length,
+      },
+      reason: `trained on ${rows.length} newly observed ${scope} overnight outcome(s)`,
+    });
+    if (scope === "shared") {
+      sharedState = next;
+      sharedTrained = rows.length;
+    }
+  }
+  return { trained: sharedTrained, state: sharedState };
 }
 
 interface Split {
@@ -351,7 +397,7 @@ export function assessPromotionReadiness(e: PromotionEvidence): PromotionReadine
 
 /** Everything the learning page needs about the model itself. */
 export async function getModelReport() {
-  const state = await loadModel();
+  const state = (await governedChampion("shared")).state;
   const d = diagnostics(state);
   const rows = await labelledRows();
   const base = rows.length ? rows.filter((r) => r.label).length / rows.length : null;

@@ -11,7 +11,8 @@ import { getKv, setKv } from "../lib/kv";
 import { log } from "../lib/log";
 import { getDailyBars } from "../lib/market/data";
 import type { Market } from "../lib/t212/instruments";
-import { predict, loadModel, saveModel, train, type TrainingSample } from "../lib/quant/model";
+import { predict, train, type TrainingSample } from "../lib/quant/model";
+import { governanceThresholds, persistTrainedVersion, trainingBase, type ModelScope } from "../lib/quant/governance";
 import {
   BACKFILL_STATS_KEY,
   marketContextSeries,
@@ -124,7 +125,7 @@ export async function backfillRound(deadline: number): Promise<BackfillResult> {
   const chosen = selectShortlisted(rows, t.backfillTopFraction);
   if (chosen.length > 0) {
     const samples: TrainingSample[] = toTrainingSamples(chosen, t.backfillWeight);
-    const state = await loadModel();
+    const sharedBase = await trainingBase("shared");
 
     // Score the batch before learning from it, so the skill figure is honest.
     const rate = chosen.filter((r) => r.label).length / chosen.length;
@@ -132,14 +133,33 @@ export async function backfillRound(deadline: number): Promise<BackfillResult> {
     let baseline = 0;
     for (const r of chosen) {
       const y = r.label ? 1 : 0;
-      brier += (predict(state, r.features).raw - y) ** 2;
+      brier += (predict(sharedBase.state, r.features).raw - y) ** 2;
       baseline += (rate - y) ** 2;
     }
 
-    const trained = train(state, samples, t, { frozen: replayFrozenFeatures(!!marketContext), calibrate: false });
-    for (const k of Object.keys(trained.grad2)) trained.grad2[k] = Math.min(trained.grad2[k], GRAD2_CAP);
-    trained.biasGrad2 = Math.min(trained.biasGrad2, GRAD2_CAP);
-    await saveModel(trained);
+    const scopes: ModelScope[] = ["shared"];
+    if (chosen.length >= governanceThresholds().marketTrainingSamples) scopes.push(market);
+    for (const scope of scopes) {
+      const base = scope === "shared" ? sharedBase : await trainingBase(scope);
+      const trained = train(base.state, samples, t, { frozen: replayFrozenFeatures(!!marketContext), calibrate: false });
+      for (const k of Object.keys(trained.grad2)) trained.grad2[k] = Math.min(trained.grad2[k], GRAD2_CAP);
+      trained.biasGrad2 = Math.min(trained.biasGrad2, GRAD2_CAP);
+      await persistTrainedVersion({
+        scope,
+        parentVersionId: base.id,
+        state: trained,
+        tuning: t,
+        window: {
+          from: chosen.map((row) => row.date).sort()[0],
+          to: chosen.map((row) => row.date).sort().at(-1)!,
+        },
+        metrics: {
+          brier: brier / chosen.length,
+          baselineBrier: baseline / chosen.length,
+        },
+        reason: `historical replay of ${chosen.length} shortlisted ${market} overnight candidates`,
+      });
+    }
 
     const prev = (await getKv<BackfillStats>(BACKFILL_STATS_KEY))?.value;
     await setKv(BACKFILL_STATS_KEY, {

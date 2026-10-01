@@ -7,10 +7,11 @@ import { estimatedRoundTripCostPct } from "../lib/risk/guardrails";
 import { fxRate, getDailyBars } from "../lib/market/data";
 import { tradingDateOf } from "../lib/market/sessions";
 import { unitCostInAccountCcy } from "../lib/risk/sizing";
-import { findHistorical, submitMarketOrder, waitForOrder } from "../lib/t212/safeOrder";
+import { adverseSlippagePct, findHistorical, submitMarketOrder, waitForOrder } from "../lib/t212/safeOrder";
 import { getInstrumentsCached } from "../lib/t212/instruments";
 import { setRunStatus } from "./pipeline";
 import { finalizeTrade } from "./finalize";
+import { executionCosts, priceAndFxAttribution } from "../lib/execution-attribution";
 
 const { runs, trades, orders, candidates } = schema;
 const MAX_SELL_ATTEMPTS = 3;
@@ -57,10 +58,29 @@ async function exitDry(run: Run, trade: Trade) {
   const entry = trade.entryPrice ?? next.open;
   const gross = (next.open / entry - 1) * 100;
   const net = gross - estimatedRoundTripCostPct(run.market, (await getSettings()).quant);
-  const { fx, instCcy } = await accountFx(trade.ticker);
+  const { fx, ccy, instCcy } = await accountFx(trade.ticker);
   const invested = trade.quantity * unitCostInAccountCcy(entry, instCcy, fx);
+  const attribution = priceAndFxAttribution({
+    quantity: trade.quantity,
+    entryPrice: entry,
+    exitPrice: next.open,
+    instrumentCurrency: instCcy,
+    entryFxRate: trade.entryFxRate ?? fx,
+    exitFxRate: fx,
+  });
+  const benchmarkReturnPct = await overnightBenchmarkReturn(run);
 
-  await closeTrade(run, trade, { exitPrice: next.open, pnlPct: net, pnl: (invested * net) / 100 });
+  await closeTrade(run, trade, {
+    exitPrice: next.open,
+    pnlPct: net,
+    pnl: (invested * net) / 100,
+    instrumentCurrency: instCcy,
+    accountCurrency: ccy,
+    exitFxRate: fx,
+    ...attribution,
+    benchmarkReturnPct,
+    selectionReturnPct: benchmarkReturnPct == null ? null : gross - benchmarkReturnPct,
+  });
 }
 
 async function exitReal(run: Run, trade: Trade) {
@@ -116,16 +136,102 @@ async function exitReal(run: Run, trade: Trade) {
   await db.update(orders).set({ status: "filled", filledQuantity: done.filledQuantity ?? null, updatedAt: new Date() }).where(eq(orders.id, last.id)).run();
   const hist = await findHistorical(client, done.id);
   const exitPrice = hist?.fill?.price ?? null;
-  await db.update(orders).set({ fillPrice: exitPrice, updatedAt: new Date() }).where(eq(orders.id, last.id)).run();
+  const slippagePct =
+    exitPrice != null && last.referencePrice != null
+      ? adverseSlippagePct("SELL", last.referencePrice, exitPrice)
+      : null;
+  await db.update(orders).set({ fillPrice: exitPrice, slippagePct, updatedAt: new Date() }).where(eq(orders.id, last.id)).run();
   const entry = trade.entryPrice;
   const pnlPct = exitPrice && entry ? (exitPrice / entry - 1) * 100 : null;
   const pnl = hist?.fill?.walletImpact?.realisedProfitLoss ?? null;
-  await closeTrade(run, trade, { exitPrice, pnlPct, pnl });
+  let fx = trade.entryFxRate;
+  let ccy = trade.accountCurrency;
+  let instCcy = trade.instrumentCurrency;
+  try {
+    const currentFx = await accountFx(trade.ticker);
+    fx = currentFx.fx;
+    ccy = currentFx.ccy;
+    instCcy = currentFx.instCcy;
+  } catch (error) {
+    await log("warn", "exit", `Closed ${trade.ticker}, but exit FX attribution was unavailable: ${String(error).slice(0, 160)}`, run.id);
+  }
+  const attribution =
+    exitPrice != null && entry != null && trade.entryFxRate != null && fx != null && instCcy
+      ? priceAndFxAttribution({
+          quantity: trade.quantity,
+          entryPrice: entry,
+          exitPrice,
+          instrumentCurrency: trade.instrumentCurrency ?? instCcy,
+          entryFxRate: trade.entryFxRate,
+          exitFxRate: fx,
+        })
+      : { grossPnl: null, fxImpact: null };
+  const allOrders = await db.select().from(orders).where(eq(orders.runId, run.id));
+  const costs =
+    instCcy && fx != null
+      ? executionCosts(allOrders, trade.instrumentCurrency ?? instCcy, trade.entryFxRate ?? fx, fx)
+      : { estimatedSpreadCost: trade.estimatedSpreadCost, slippageCost: trade.slippageCost };
+  const benchmarkReturnPct = await overnightBenchmarkReturn(run);
+  await closeTrade(run, trade, {
+    exitPrice,
+    pnlPct,
+    pnl,
+    instrumentCurrency: trade.instrumentCurrency ?? instCcy,
+    accountCurrency: trade.accountCurrency ?? ccy,
+    exitFxRate: fx,
+    ...attribution,
+    ...costs,
+    benchmarkReturnPct,
+    selectionReturnPct: benchmarkReturnPct == null || pnlPct == null ? null : pnlPct - benchmarkReturnPct,
+  });
 }
 
-async function closeTrade(run: Run, trade: Trade, r: { exitPrice: number | null; pnlPct: number | null; pnl: number | null }) {
+type CloseAttribution = {
+  instrumentCurrency?: string | null;
+  accountCurrency?: string | null;
+  exitFxRate?: number | null;
+  grossPnl?: number | null;
+  estimatedSpreadCost?: number | null;
+  slippageCost?: number | null;
+  fxImpact?: number | null;
+  benchmarkReturnPct?: number | null;
+  selectionReturnPct?: number | null;
+};
+
+async function overnightBenchmarkReturn(run: Run): Promise<number | null> {
+  try {
+    const symbol = run.market === "US" ? "^GSPC" : "^FTSE";
+    const bars = await getDailyBars(symbol, 15);
+    const entry = bars.find((bar) => tradingDateOf(run.market, bar.date) === run.tradingDate);
+    const next = bars.find((bar) => tradingDateOf(run.market, bar.date) > run.tradingDate);
+    return entry && next && entry.close > 0 ? (next.open / entry.close - 1) * 100 : null;
+  } catch {
+    return null;
+  }
+}
+
+async function closeTrade(
+  run: Run,
+  trade: Trade,
+  r: { exitPrice: number | null; pnlPct: number | null; pnl: number | null } & CloseAttribution,
+) {
   const db = getDb();
-  await db.update(trades).set({ status: "closed", exitAt: new Date(), exitPrice: r.exitPrice, pnlPct: r.pnlPct, pnl: r.pnl }).where(eq(trades.id, trade.id)).run();
+  await db.update(trades).set({
+    status: "closed",
+    exitAt: new Date(),
+    exitPrice: r.exitPrice,
+    pnlPct: r.pnlPct,
+    pnl: r.pnl,
+    instrumentCurrency: r.instrumentCurrency,
+    accountCurrency: r.accountCurrency,
+    exitFxRate: r.exitFxRate,
+    grossPnl: r.grossPnl,
+    estimatedSpreadCost: r.estimatedSpreadCost,
+    slippageCost: r.slippageCost,
+    fxImpact: r.fxImpact,
+    benchmarkReturnPct: r.benchmarkReturnPct,
+    selectionReturnPct: r.selectionReturnPct,
+  }).where(eq(trades.id, trade.id)).run();
   setRunStatus(run.id, "closed");
   await log("info", "exit", `Closed ${trade.ticker}: ${r.pnlPct == null ? "n/a" : r.pnlPct.toFixed(2) + "%"} (${r.pnl?.toFixed(2) ?? "n/a"})`, run.id);
   await finalizeTrade(trade.id);

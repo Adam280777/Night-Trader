@@ -4,6 +4,7 @@ import { log } from "../lib/log";
 import { roundTripCostPct } from "../lib/quant/costs";
 import { reviewTrade, runLearningCycle } from "../lib/quant/learn";
 import { scoreOutcomes } from "./outcomes";
+import { attachOutcomes, autoRollbackIfDeteriorated } from "../lib/quant/governance";
 
 const { trades, decisions, runs, candidates } = schema;
 
@@ -22,11 +23,21 @@ export async function finalizeTrade(tradeId: number): Promise<void> {
 
     // The traded name's label should be what the broker actually filled, not the Yahoo open it is a proxy for.
     if (run.mode !== "dry" && t.entryPrice && t.exitPrice && t.entryPrice > 0 && t.exitPrice > 0) {
+      const picked = await db
+        .select({ id: candidates.id })
+        .from(candidates)
+        .where(and(eq(candidates.runId, t.runId), eq(candidates.ticker, t.ticker)))
+        .get();
       await db
         .update(candidates)
         .set({ overnightReturnPct: (t.exitPrice / t.entryPrice - 1) * 100 })
         .where(and(eq(candidates.runId, t.runId), eq(candidates.ticker, t.ticker)))
         .run();
+      if (picked) {
+        await attachOutcomes([picked.id]);
+        await autoRollbackIfDeteriorated(run.market);
+        await autoRollbackIfDeteriorated("shared");
+      }
     }
     const outcomes = await db.select().from(candidates).where(eq(candidates.runId, t.runId)).all();
     const signals = (outcomes.find((o) => o.ticker === t.ticker)?.signals ?? null) as Record<string, number> | null;
