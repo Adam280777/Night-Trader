@@ -27,6 +27,36 @@ export const OpsSchema = z.object({
 });
 export type OpsSettings = z.infer<typeof OpsSchema>;
 
+export const IntradaySchema = z.object({
+  /** Signal generation is enabled by default, but orders require the separate switch below. */
+  enabled: z.boolean().default(true),
+  ordersEnabled: z.boolean().default(false),
+  approvalMode: z.boolean().default(true),
+  usEnabled: z.boolean().default(true),
+  ukEnabled: z.boolean().default(false),
+  scanIntervalMinutes: z.number().int().min(1).max(30).default(5),
+  maxTradesPerDay: z.number().int().min(1).max(10).default(2),
+  cooldownMinutes: z.number().int().min(5).max(240).default(30),
+  entryStartMinutesAfterOpen: z.number().int().min(15).max(180).default(35),
+  entryCutoffMinutesBeforeClose: z.number().int().min(30).max(240).default(75),
+  maxHoldMinutes: z.number().int().min(10).max(240).default(90),
+  positionPct: z.number().min(0.01).max(0.5).default(0.1),
+  stopLossPct: z.number().min(0.2).max(10).default(0.8),
+  takeProfitPct: z.number().min(0.2).max(20).default(1.4),
+  trailingStopPct: z.number().min(0.1).max(10).default(0.6),
+  minMomentumPct: z.number().min(0.01).max(10).default(0.15),
+  maxMomentumPct: z.number().min(0.1).max(20).default(2.5),
+  minRelativeVolume: z.number().min(0.1).max(10).default(1.1),
+  minScore: z.number().int().min(40).max(95).default(65),
+  minConfidence: z.number().min(0.5).max(0.95).default(0.6),
+  minExpectedEdgePct: z.number().min(0).max(5).default(0.15),
+  maxSpreadPct: z.number().min(0.01).max(5).default(0.35),
+  minBars: z.number().int().min(12).max(60).default(24),
+  usWatchlist: z.array(z.string().trim().min(1).max(20)).min(1).max(30).default(["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL"]),
+  ukWatchlist: z.array(z.string().trim().min(1).max(20)).min(1).max(30).default(["AZN.L", "BP.L", "HSBA.L", "SHEL.L", "ULVR.L"]),
+});
+export type IntradaySettings = z.infer<typeof IntradaySchema>;
+
 /** User-tunable settings, persisted in SQLite. Hard limits live here but are enforced in lib/risk. */
 export const SettingsSchema = z.object({
   // "dry" = the full pipeline runs and results are simulated, no orders sent. "trading" = send orders to T212_ENV.
@@ -35,6 +65,7 @@ export const SettingsSchema = z.object({
   liveConfirmed: z.boolean().default(false),
   killSwitch: z.boolean().default(false),
   approvalMode: z.boolean().default(true),
+  overnightEnabled: z.boolean().default(true),
   /** Demo mode only: if the engine passes, still buy its best-ranked name so the outcome can be learned from. */
   demoForceTrade: z.boolean().default(true),
   /** Share of the account staked on a demo exploration trade. */
@@ -56,6 +87,8 @@ export const SettingsSchema = z.object({
   approvalWindowMinutes: z.number().int().min(1).max(120).default(15),
   /** Everything adjustable inside the quantitative engine. */
   quant: QuantTuningSchema.default(QuantTuningSchema.parse({})),
+  /** Low-frequency intraday strategy, designed for a durable one-minute serverless tick. */
+  intraday: IntradaySchema.default(IntradaySchema.parse({})),
   /** Housekeeping, retention and diagnostics. None of this changes what the engine decides. */
   ops: OpsSchema.default(OpsSchema.parse({})),
 });
@@ -101,6 +134,7 @@ export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
   // any key the caller left out of a partial patch. Merge them a level deeper.
   const merged: Record<string, unknown> = { ...current, ...patch };
   if (patch.quant) merged.quant = { ...current.quant, ...patch.quant };
+  if (patch.intraday) merged.intraday = { ...current.intraday, ...patch.intraday };
   if (patch.ops) merged.ops = { ...current.ops, ...patch.ops };
   if (patch.markets) merged.markets = { ...current.markets, ...patch.markets };
   const next = SettingsSchema.parse(merged);

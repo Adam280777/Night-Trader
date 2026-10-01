@@ -127,8 +127,24 @@ export async function executeBuy(runId: number): Promise<void> {
       }
     }
 
+    const intraday = run.strategy === "intraday_momentum" ? settings.intraday : null;
     await db.insert(trades)
-      .values({ runId, decisionId: d.id, ticker: d.ticker, name: d.name, quantity: filledQty, entryPrice, entryAt: new Date(), status: "open" })
+      .values({
+        runId,
+        decisionId: d.id,
+        ticker: d.ticker,
+        name: d.name,
+        quantity: filledQty,
+        entryPrice,
+        entryAt: new Date(),
+        status: "open",
+        strategy: run.strategy,
+        stopPrice: intraday ? entryPrice * (1 - intraday.stopLossPct / 100) : null,
+        targetPrice: intraday ? entryPrice * (1 + intraday.takeProfitPct / 100) : null,
+        trailingStopPct: intraday?.trailingStopPct ?? null,
+        highWatermark: intraday ? entryPrice : null,
+        plannedExitAt: intraday ? new Date(Date.now() + intraday.maxHoldMinutes * 60_000) : null,
+      })
       .run();
     setRunStatus(runId, "holding");
     await log("info", "execute", `Position open: ${filledQty} ${d.ticker} @ ${entryPrice}`, runId);

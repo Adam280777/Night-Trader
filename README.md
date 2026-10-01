@@ -1,14 +1,38 @@
-# Overnight Trader
+# Trading Bot
 
-A dashboard that researches the market, buys **one** stock shortly before the close and
-sells it at the next open, every trading day, then learns from its own results. Connects to Trading 212
-(demo or live), US and UK markets, with hard guardrails the decision engine cannot override. Runs fully in the cloud, so your PC
-can be off.
+A serverless quantitative trading platform that coordinates two strategies on one Trading 212 account:
 
-**No AI provider, no API keys, no per-run cost.** Every decision is made by a quantitative engine that runs inside
+- **Overnight** researches liquid stocks, enters shortly before the close, and exits at the next open.
+- **Intraday momentum** scans an operator-owned liquid-stock watchlist using five-minute bars, enters only during a configured window, and manages stop, target, trailing-stop, maximum-hold, and session-close exits.
+
+Both strategies run through one scheduler, database, order-safety layer, dashboard, and audit trail. They are
+configured independently but share the kill switch, unknown-order pause, account cash and position caps, loss
+circuit breakers, execution telemetry, and the rule that only one position can be open at a time. Runs fully in
+the cloud, so your PC can be off.
+
+**No AI provider, no AI API keys, no per-run cost.** Every decision is made by a quantitative engine that runs inside
 the app: a logistic model trained on the app's own past outcomes, conditional historical analogues of each stock's
 own behaviour, a free headline sentiment engine, and rules mined from the outcome history. Market data and news come
-from Yahoo Finance, which needs no key. The only external service is Trading 212.
+from Yahoo Finance, which needs no key. Trading 212 supplies the tradable instrument map, exchange schedule, account
+state, orders, positions, and authoritative fills.
+
+## How the intraday strategy works
+
+1. The one-minute scheduler checks whether each enabled market is inside its configured entry window.
+2. On the configured scan interval, Yahoo five-minute bars and a timestamped quote are loaded for the configured
+   watchlist. Symbols must also map to a liquid, non-leveraged Trading 212 stock.
+3. A deterministic momentum setup checks 20-minute movement, fast/slow EMA alignment, VWAP, relative volume,
+   recent-high breakout, quote freshness, and quoted spread. Every threshold is configurable.
+4. The best passing setup becomes a normal persisted run and decision. It uses the same approval flow, fresh
+   account checks, sizing caps, order-intent persistence, fill reconciliation, slippage measurement, and
+   unknown-outcome pause as the overnight strategy.
+5. Each scheduler tick manages an open intraday trade. Stop loss, profit target, trailing stop, maximum hold time,
+   and a close-of-session deadline can initiate an exit. The exact app-owned quantity is sold.
+6. Daily trade limits and an exit cooldown prevent repeated churn. Intraday results are reported separately and
+   never train or contaminate the overnight close-to-open model.
+
+The intraday module starts with signal generation enabled but **intraday order permission disabled**. Global order
+placement and, for live accounts, the typed live confirmation are additional independent gates.
 
 ## How the decision is made
 
@@ -36,12 +60,14 @@ recomputed from fresh prices at decision time, so a stale stored score can never
 
 ## Watching it work
 
-The **Live activity** page is a running feed of what the engine is doing: which stage tonight's run has reached,
-what it has shortlisted and why each name is still in or already out, which symbols it has studied most recently
-and what it scored them, plus every logged event as it happens. It refreshes every few seconds and can be paused.
+The **Live activity** page is a running feed of what the engine is doing: the active strategy and stage, overnight
+shortlists, intraday scan reasons, recently studied symbols, and every logged event as it happens. It refreshes
+every few seconds and can be paused.
 
-The dashboard and **Learning** page add an equity curve, run-outcome breakdown, return calendar and distribution,
-model reliability plot, and weight comparison while retaining the underlying tables. **Logs** exposes searchable
+The dashboard shows both strategy modules, their run/trade evidence, the active strategy, position stop/target
+information, an equity curve, run-outcome breakdown, and return calendar. The **Learning** page remains explicitly
+about the overnight model and adds its return distribution, model reliability plot, and weight comparison while
+retaining the underlying tables. **Logs** exposes searchable
 structured context and CSV export. **System health** shows scheduler heartbeat, job success and duration, recent
 failures, log volume, and database growth.
 
@@ -79,7 +105,8 @@ on demand and start fresh after a few hours of quiet.
 - **Vercel** hosts the dashboard and the API.
 - **Turso** (hosted SQLite, free tier) stores everything.
 - An **external timer** calls `GET /api/cron/tick` (header `Authorization: Bearer <CRON_SECRET>`) every minute.
-  Each call does one small step (screen, research, decide, buy, sell) and resumes safely if interrupted. Any time
+  Each call first recovers interrupted work and manages open positions, then advances overnight work and eligible
+  intraday scans, and finally runs housekeeping. Work resumes safely if interrupted. Any time
   left over at the end of a call goes to studying the universe, so the knowledge base grows on the same timer.
 
 ## Deploy
@@ -112,6 +139,9 @@ Without `TURSO_DATABASE_URL` a local SQLite file (`data/trader.db`) is used.
 ## Safety
 
 Starts in dry-run (no orders). Demo trading needs a Trading 212 demo key; live trading needs a live key and typing `TRADE LIVE`.
-There is a kill switch, position caps, a daily/weekly loss breaker and an optional approval step. Nothing here can guarantee returns:
-overnight holds carry gap risk, and stamp duty, FX fees and spread eat small edges. The engine is deliberately willing to
-sit out; a no-trade night is a real answer, not a failure. This is not financial advice.
+There is a kill switch, position caps, a daily/weekly loss breaker and independent approval/order switches.
+Nothing here can guarantee returns. Overnight holds carry gap risk. Intraday data is polled rather than streamed,
+so a fast move can cross a software-managed exit before the next scheduler tick. Vercel, Yahoo, the external timer,
+the database, and Trading 212 are all dependencies; broker-side protection should be preferred whenever it becomes
+available through the public API. Stamp duty, FX fees, spread, and slippage can erase small edges. Both strategies
+are deliberately willing to sit out. This is not financial advice.

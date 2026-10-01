@@ -12,7 +12,7 @@ export default async function SettingsPage() {
     <>
       <PageHeader
         title="Settings"
-        subtitle="Connect your account, set the safety limits, and tune every parameter the quant model uses to decide. Changes save instantly and apply to the next run."
+        subtitle="Configure overnight and intraday strategies individually while retaining shared account-wide safety, execution and operational controls."
       />
       <div className="space-y-6">
         <ConnectionsForm initial={await connectionStatus()} />

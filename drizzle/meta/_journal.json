@@ -57,6 +57,13 @@
       "when": 1790880553880,
       "tag": "0007_silent_lethal_legion",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1790882469606,
+      "tag": "0008_workable_supernaut",
+      "breakpoints": true
     }
   ]
 }

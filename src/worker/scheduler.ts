@@ -17,6 +17,8 @@ import { scoreOutcomes } from "./outcomes";
 import { runLearningCycle } from "../lib/quant/learn";
 import { studyRound } from "./study";
 import { backfillRound } from "./backfill";
+import { processIntradayRun, scanIntradayMarket } from "./intraday";
+import { findHistorical } from "../lib/t212/safeOrder";
 
 const { runs, decisions, trades, equitySnapshots, orders, candidates } = schema;
 
@@ -85,7 +87,8 @@ async function recover(nowMs: number): Promise<void> {
     }
   }
 
-  // Died mid-buy: trust the broker's position list.
+  // Died mid-buy: recover only the quantity attributable to this run's persisted order.
+  // Aggregate broker positions may include unrelated holdings in the same ticker.
   const executing = await db.select().from(runs).where(eq(runs.status, "executing"));
   if (executing.length === 0) return;
   const client = await tryClient();
@@ -97,14 +100,59 @@ async function recover(nowMs: number): Promise<void> {
       continue;
     }
     if (r.mode !== "dry" && client && d?.ticker) {
-      const pos = (await client.getPositions(d.ticker)).find((p) => p.instrument.ticker === d.ticker);
-      if (pos && pos.quantity > 0) {
-        await db
-          .insert(trades)
-          .values({ runId: r.id, decisionId: d.id, ticker: d.ticker, name: d.name, quantity: pos.quantity, entryPrice: pos.averagePricePaid, entryAt: new Date(), status: "open" });
-        await setRunStatus(r.id, "holding");
-        await log("warn", "recovery", `Recovered open position ${pos.quantity} ${d.ticker} for run #${r.id}.`, r.id);
+      const [buy] = await db
+        .select()
+        .from(orders)
+        .where(and(eq(orders.runId, r.id), eq(orders.side, "BUY")))
+        .orderBy(desc(orders.id))
+        .limit(1);
+      if (buy?.status === "unknown" || buy?.status === "intent") {
+        await setRunStatus(r.id, "failed", "Buy order outcome is unknown; manual reconciliation required");
         continue;
+      }
+      if (buy?.t212OrderId) {
+        const historical = await findHistorical(client, Number(buy.t212OrderId)).catch(() => null);
+        const brokerOrder = historical?.order ?? await client.getOrder(Number(buy.t212OrderId)).catch(() => null);
+        if (!historical && !brokerOrder && buy.status === "sent") {
+          await log("warn", "recovery", `Could not reconcile buy order ${buy.t212OrderId} yet; leaving run #${r.id} paused in execution.`, r.id);
+          continue;
+        }
+        const filledQuantity = historical?.fill?.quantity ?? brokerOrder?.filledQuantity ?? buy.filledQuantity ?? 0;
+        if (filledQuantity <= 0 && brokerOrder && !["CANCELLED", "REJECTED", "REPLACED"].includes(brokerOrder.status)) {
+          continue;
+        }
+        if (filledQuantity > 0) {
+          const entryPrice = historical?.fill?.price ?? buy.fillPrice ?? buy.referencePrice;
+          await db.update(orders).set({
+            status: brokerOrder?.status === "FILLED" ? "filled" : "partial",
+            filledQuantity,
+            fillPrice: entryPrice,
+            updatedAt: new Date(),
+          }).where(eq(orders.id, buy.id));
+          const settings = await getSettings();
+          const intraday = r.strategy === "intraday_momentum" ? settings.intraday : null;
+          await db
+            .insert(trades)
+            .values({
+              runId: r.id,
+              decisionId: d.id,
+              ticker: d.ticker,
+              name: d.name,
+              quantity: filledQuantity,
+              entryPrice,
+              entryAt: new Date(),
+              status: "open",
+              strategy: r.strategy,
+              stopPrice: intraday && entryPrice ? entryPrice * (1 - intraday.stopLossPct / 100) : null,
+              targetPrice: intraday && entryPrice ? entryPrice * (1 + intraday.takeProfitPct / 100) : null,
+              trailingStopPct: intraday?.trailingStopPct ?? null,
+              highWatermark: intraday ? entryPrice : null,
+              plannedExitAt: intraday ? new Date(nowMs + intraday.maxHoldMinutes * 60_000) : null,
+            });
+          await setRunStatus(r.id, "holding");
+          await log("warn", "recovery", `Recovered ${filledQuantity} ${d.ticker} filled by order ${buy.t212OrderId} for run #${r.id}.`, r.id);
+          continue;
+        }
       }
     }
     await setRunStatus(r.id, "failed", "Interrupted during buy; no position found");
@@ -122,6 +170,7 @@ const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16) + "Z";
 /** Create today's run for a market once we are inside its research window. Always says why it did or did not. */
 async function ensureRun(market: Market, deps: SchedulerDeps): Promise<EnsureStatus> {
   const settings = await getSettings();
+  if (!settings.overnightEnabled) return { text: "Overnight strategy is switched off in Settings" };
   if (!settings.markets[market]) return { text: `${market} is switched off in Settings` };
   if (settings.killSwitch) return { text: "Kill switch is on" };
   const client = await tryClient();
@@ -145,7 +194,7 @@ async function ensureRun(market: Market, deps: SchedulerDeps): Promise<EnsureSta
   const [existing] = await db
     .select({ id: runs.id, status: runs.status })
     .from(runs)
-    .where(and(eq(runs.tradingDate, tradingDate), eq(runs.market, market)))
+    .where(and(eq(runs.tradingDate, tradingDate), eq(runs.market, market), eq(runs.strategy, "overnight")))
     .limit(1);
   if (existing) return { text: `Run #${existing.id} for ${tradingDate} is ${existing.status}` };
 
@@ -174,6 +223,7 @@ async function recordEnsure(market: Market, status: EnsureStatus, nowMs: number)
 }
 
 async function processRun(run: typeof runs.$inferSelect, deps: SchedulerDeps, startedAt: number): Promise<void> {
+  if (run.strategy === "intraday_momentum") return processIntradayRun(run, deps.now());
   const db = getDb();
   const settings = await getSettings();
   const nowMs = deps.now().getTime();
@@ -265,6 +315,30 @@ export async function tick(deps: SchedulerDeps = realClock): Promise<TickResult>
         await processRun(r, deps, startedAt);
       } catch (err) {
         await warnOnce(`run:${r.id}`, `Run #${r.id} step failed: ${String(err).slice(0, 200)}`, r.id, nowMs);
+      }
+    }
+
+    if (settings.intraday.enabled && Date.now() - startedAt < TICK_BUDGET_MS - 90_000) {
+      const client = await tryClient();
+      if (client) {
+        for (const market of MARKETS) {
+          if (!(await every(`intraday-scan:${market}`, minutes(settings.intraday.scanIntervalMinutes), nowMs))) continue;
+          try {
+            const session = currentOrNextSession(await getMarketSessions(client, market), deps.now());
+            if (!session) continue;
+            const scan = await traced(`intraday-scan-${market.toLowerCase()}`, () => scanIntradayMarket(market, session, deps.now()), {
+              ...traceOptions,
+              detail: (value) => ({ created: value.created, message: value.message, candidates: value.candidates }),
+              summary: (value) => value.message,
+            });
+            if (scan.ok) {
+              await setKv(`intraday:${market}`, { text: scan.value.message, at: nowMs });
+              if (scan.value.created) await log("info", "scheduler", scan.value.message);
+            }
+          } catch (err) {
+            await warnOnce(`intraday:${market}`, `Intraday ${market} scan failed: ${String(err).slice(0, 200)}`, undefined, nowMs);
+          }
+        }
       }
     }
 

@@ -16,6 +16,7 @@ export const runs = sqliteTable(
   "runs",
   {
     id: id(),
+    strategy: text("strategy", { enum: ["overnight", "intraday_momentum"] }).notNull().default("overnight"),
     tradingDate: text("trading_date").notNull(), // YYYY-MM-DD in market tz
     market: text("market", { enum: ["US", "UK"] }).notNull(),
     mode: text("mode", { enum: ["dry", "demo", "live"] }).notNull(),
@@ -152,6 +153,13 @@ export const trades = sqliteTable("trades", {
   pnl: real("pnl"),
   pnlPct: real("pnl_pct"),
   status: text("status", { enum: ["open", "closed"] }).notNull(),
+  strategy: text("strategy", { enum: ["overnight", "intraday_momentum"] }).notNull().default("overnight"),
+  stopPrice: real("stop_price"),
+  targetPrice: real("target_price"),
+  trailingStopPct: real("trailing_stop_pct"),
+  highWatermark: real("high_watermark"),
+  plannedExitAt: integer("planned_exit_at", { mode: "timestamp_ms" }),
+  exitReason: text("exit_reason"),
   review: text("review"),
   createdAt: createdAt(),
 });

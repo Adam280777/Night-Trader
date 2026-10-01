@@ -7,8 +7,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Overnight Trader",
-  description: "A quantitative model that researches, buys one stock before the close and sells at the next open.",
+  title: "Trading Bot",
+  description: "A quantitative multi-strategy trading platform for overnight and low-frequency intraday execution.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

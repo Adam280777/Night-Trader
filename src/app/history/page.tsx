@@ -22,6 +22,7 @@ export default async function History() {
                 <tr>
                   <th className="py-2 pr-4 font-medium">Date</th>
                   <th className="py-2 pr-4 font-medium">Market</th>
+                  <th className="py-2 pr-4 font-medium">Strategy</th>
                   <th className="py-2 pr-4 font-medium">Pick</th>
                   <th className="py-2 pr-4 text-right font-medium">Confidence</th>
                   <th className="py-2 pr-4 text-right font-medium">Result</th>
@@ -35,6 +36,7 @@ export default async function History() {
                     <tr key={run.id} className="hover:bg-surface-2">
                       <td className="py-2.5 pr-4"><Link href={`/history/${run.id}`} className="font-medium text-accent hover:underline">{run.tradingDate}</Link></td>
                       <td className="py-2.5 pr-4">{run.market} <span className="text-xs text-muted">{run.mode}</span></td>
+                      <td className="py-2.5 pr-4">{run.strategy === "intraday_momentum" ? "Intraday momentum" : "Overnight"}</td>
                       <td className="py-2.5 pr-4">{decision?.action === "BUY" ? decision.name ?? decision.ticker : <span className="text-muted">No trade</span>}</td>
                       <td className="tabular py-2.5 pr-4 text-right">{decision?.confidence != null ? `${Math.round(decision.confidence * 100)}%` : ""}</td>
                       <td className={`tabular py-2.5 pr-4 text-right font-medium ${tone(trade?.pnlPct) === "good" ? "text-accent" : tone(trade?.pnlPct) === "bad" ? "text-danger" : ""}`}>

@@ -23,8 +23,9 @@ export async function checkDecisionGuardrails(
   const inst = client ? (await getInstrumentsCached(client)).find((i) => i.ticker === d.ticker) : undefined;
   const market = inst ? marketOf(inst) ?? run.market : run.market;
 
+  const settings = await getSettings();
   const result = evaluateGuardrails({
-    settings: await getSettings(),
+    settings,
     market,
     proposal: { confidence: d.confidence ?? 0, investPct: d.investPct ?? 0, expectedMovePct: d.expectedMovePct ?? 0 },
     instrument: { type: inst?.type ?? "STOCK", name: inst?.name ?? d.name ?? "" },
@@ -33,6 +34,9 @@ export async function checkDecisionGuardrails(
     hasOpenPosition: !!await openTrade(),
     minutesToClose,
     exploration: d.forced && run.mode === "demo",
+    minimums: run.strategy === "intraday_momentum"
+      ? { confidence: settings.intraday.minConfidence, expectedEdgePct: settings.intraday.minExpectedEdgePct }
+      : undefined,
   });
   if (await anyUnknownOrders()) {
     result.allowed = false;

@@ -12,7 +12,8 @@ export function settingsIssues(s: Settings): SettingsIssue[] {
   const out: SettingsIssue[] = [];
   const add = (level: SettingsIssue["level"], field: string, message: string) => out.push({ level, field, message });
 
-  if (!s.markets.US && !s.markets.UK) add("warn", "markets", "Both markets are switched off, so no run will ever be created.");
+  if (s.overnightEnabled && !s.markets.US && !s.markets.UK) add("warn", "markets", "The overnight strategy is enabled but both of its markets are switched off.");
+  if (s.intraday.enabled && !s.intraday.usEnabled && !s.intraday.ukEnabled) add("warn", "intraday", "The intraday strategy is enabled but both of its markets are switched off.");
   if (s.killSwitch) add("warn", "killSwitch", "The kill switch is on: no new trades will be started until it is turned off.");
 
   const lead = s.minutesBeforeCloseToResearch - s.minutesBeforeCloseToBuy;
@@ -25,7 +26,14 @@ export function settingsIssues(s: Settings): SettingsIssue[] {
   if (s.weeklyLossLimitPct < s.dailyLossLimitPct) add("warn", "limits", "The weekly loss limit is tighter than the daily one, so the daily limit can never be reached first.");
   if (s.ukMinConfidence < s.minConfidence) add("info", "confidence", "The UK confidence floor is below the general one, so the general floor applies to UK trades too.");
   if (s.maxPositionPct > 0.5) add("warn", "limits", `A single position may be up to ${Math.round(s.maxPositionPct * 100)}% of the account. One bad gap could cost a large share of it.`);
-  if (s.tradingEnabled && !s.approvalMode) add("info", "approval", "Orders will be placed without asking you first.");
+  if (s.tradingEnabled && s.overnightEnabled && !s.approvalMode) add("info", "approval", "Overnight orders will be placed without asking you first.");
+  if (s.intraday.ordersEnabled && !s.tradingEnabled) add("info", "intraday", "Intraday order permission is on, but global order placement is off, so intraday runs remain dry.");
+  if (s.intraday.ordersEnabled && !s.intraday.approvalMode) add("warn", "intraday", "Intraday orders can be placed without approval when global trading is enabled.");
+  if (s.intraday.stopLossPct >= s.intraday.takeProfitPct) add("warn", "intraday", "The intraday stop is at least as wide as the target, producing an unfavourable reward-to-risk ratio.");
+  if (s.intraday.trailingStopPct >= s.intraday.takeProfitPct) add("info", "intraday", "The trailing stop is as wide as the profit target, so it is unlikely to protect much open profit.");
+  if (s.intraday.entryStartMinutesAfterOpen + s.intraday.entryCutoffMinutesBeforeClose >= 360) {
+    add("warn", "intraday", "The intraday entry window may be empty on a normal US or UK session.");
+  }
   if (s.demoForceTrade && s.demoForceInvestPct > s.maxPositionPct) {
     add("info", "demo", "The demo exploration stake is above the position cap, so it will be reduced to the cap.");
   }

@@ -149,6 +149,23 @@ export async function getDailyBars(symbol: string, days = 90): Promise<Bar[]> {
     }));
 }
 
+/** Five-minute bars for the low-frequency intraday strategy. Yahoo limits fine-grained history. */
+export async function getIntradayBars(symbol: string, days = 5): Promise<Bar[]> {
+  const period1 = new Date(Date.now() - days * 86_400_000);
+  const res = obj(await yahoo(`intraday chart ${symbol}`, () => yf.chart(symbol, { period1, interval: "5m" }, OPTS)));
+  return list(res.quotes)
+    .filter((b) => instant(b.date) != null && num(b.open) != null && num(b.close) != null && num(b.high) != null && num(b.low) != null)
+    .map((b) => ({
+      date: new Date(instant(b.date)!),
+      open: b.open as number,
+      high: b.high as number,
+      low: b.low as number,
+      close: b.close as number,
+      volume: num(b.volume) ?? 0,
+    }))
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+}
+
 /** Next earnings date if known (overnight earnings = binary gap risk). */
 export async function getNextEarnings(symbol: string): Promise<Date | null> {
   try {

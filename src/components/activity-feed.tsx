@@ -109,7 +109,7 @@ export function ActivityFeed({ initial }: { initial: Feed }) {
         <Stat label="Symbols known" value={String(knowledge.symbols)} hint={`${knowledge.researched} with stored research`} />
         <Stat label="Studied in the last hour" value={String(knowledge.studiedLastHour)} hint={feed.continuousResearch ? "Studying continuously" : "Continuous study is off"} />
         <Stat label="Mode" value={feed.tradingEnabled ? "Placing orders" : "Dry run"} hint={run ? `Last run was ${run.mode}` : undefined} />
-        <Stat label="Tonight's run" value={run ? (run.active ? run.status.replace(/_/g, " ") : "idle") : "none yet"} hint={run ? `${run.market} · ${run.tradingDate}` : undefined} />
+        <Stat label="Featured run" value={run ? (run.active ? run.status.replace(/_/g, " ") : "idle") : "none yet"} hint={run ? `${run.strategy === "intraday_momentum" ? "Intraday" : "Overnight"} · ${run.market} · ${run.tradingDate}` : undefined} />
       </div>
 
       <section className="rounded-xl border border-border bg-surface p-5">
@@ -150,8 +150,8 @@ export function ActivityFeed({ initial }: { initial: Feed }) {
         {feed.scheduling.length > 0 && (
           <ul className="mt-3 space-y-1 border-t border-border pt-3 text-xs text-muted">
             {feed.scheduling.map((s) => (
-              <li key={s.market}>
-                <b>{s.market}</b> · {s.text} · checked {ago(s.at, now)}
+              <li key={s.key}>
+                <b>{s.label}</b> · {s.text} · checked {ago(s.at, now)}
               </li>
             ))}
           </ul>

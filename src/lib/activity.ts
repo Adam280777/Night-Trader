@@ -15,7 +15,7 @@ const { runs, candidates, eventLog, settings: settingsTable } = schema;
 const TERMINAL = ["closed", "no_trade", "blocked", "failed", "skipped"] as const;
 
 /** What each run status means while you are watching it happen. */
-const STAGE: Record<string, string> = {
+const OVERNIGHT_STAGE: Record<string, string> = {
   scheduled: "Waiting to start screening",
   screening: "Screening the universe for tonight's shortlist",
   researching: "Reading headlines and matching historical analogues",
@@ -30,6 +30,18 @@ const STAGE: Record<string, string> = {
   blocked: "Blocked by a safety limit",
   failed: "Failed",
   skipped: "Skipped",
+};
+
+const INTRADAY_STAGE: Record<string, string> = {
+  awaiting_approval: "Intraday signal is waiting for approval",
+  ready_to_buy: "Intraday signal passed; preparing the entry",
+  executing: "Placing the intraday entry",
+  holding: "Monitoring stop, target, trailing stop and time exit",
+  exiting: "Closing the intraday position",
+  closed: "Intraday trade finished",
+  no_trade: "Intraday signal expired or was declined",
+  blocked: "Intraday entry was blocked by shared guardrails",
+  failed: "Intraday run failed",
 };
 
 export interface ActivityEvent {
@@ -61,6 +73,7 @@ export interface ActivityFeedData {
   continuousResearch: boolean;
   run: {
     id: number;
+    strategy: "overnight" | "intraday_momentum";
     market: string;
     mode: string;
     status: string;
@@ -72,7 +85,7 @@ export interface ActivityFeedData {
     updatedAt: number;
   } | null;
   /** Why each enabled market does or does not have a run right now. */
-  scheduling: { market: string; text: string; at: number }[];
+  scheduling: { key: string; label: string; text: string; at: number }[];
   shortlist: { ticker: string; name: string | null; score: number | null; picked: boolean; state: "queued" | "researched" | "failed" }[];
   knowledge: { symbols: number; researched: number; studiedLastHour: number; lastStudiedAt: number | null; recent: StudiedSymbol[] };
   events: ActivityEvent[];
@@ -108,7 +121,9 @@ export async function getActivityFeed(): Promise<ActivityFeedData> {
   const scheduling: ActivityFeedData["scheduling"] = [];
   for (const m of ["US", "UK"] as const) {
     const k = await getKv<{ text: string; at: number }>(`ensure:${m}`);
-    if (k) scheduling.push({ market: m, text: k.value.text, at: k.value.at });
+    if (k) scheduling.push({ key: `overnight:${m}`, label: `Overnight ${m}`, text: k.value.text, at: k.value.at });
+    const intraday = await getKv<{ text: string; at: number }>(`intraday:${m}`);
+    if (intraday) scheduling.push({ key: `intraday:${m}`, label: `Intraday ${m}`, text: intraday.value.text, at: intraday.value.at });
   }
 
   return {
@@ -120,10 +135,11 @@ export async function getActivityFeed(): Promise<ActivityFeedData> {
     run: run
       ? {
           id: run.id,
+          strategy: run.strategy,
           market: run.market,
           mode: run.mode,
           status: run.status,
-          stage: STAGE[run.status] ?? run.status,
+          stage: (run.strategy === "intraday_momentum" ? INTRADAY_STAGE : OVERNIGHT_STAGE)[run.status] ?? run.status,
           active: !TERMINAL.includes(run.status as (typeof TERMINAL)[number]),
           error: run.error,
           tradingDate: run.tradingDate,

@@ -10,7 +10,7 @@ export default async function ActivityPage() {
     <>
       <PageHeader
         title="Live activity"
-        subtitle="What the model is doing right now — what it is studying, what it has shortlisted, how far tonight's run has got, and every event as it happens. Refreshes every few seconds."
+        subtitle="What both strategy modules are doing now: overnight research, intraday scans, active positions, scheduling reasons, and every event as it happens."
       />
       <ActivityFeed initial={await getActivityFeed()} />
     </>

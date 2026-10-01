@@ -28,9 +28,39 @@ export function Row({ label, hint, children }: { label: React.ReactNode; hint?: 
 
 export function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
-    <button role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)} className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-border"}`}>
+    <button type="button" role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)} className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-border"}`}>
       <span className={`absolute top-0.5 size-5 rounded-full bg-white transition-all ${on ? "left-[22px]" : "left-0.5"}`} />
     </button>
+  );
+}
+
+function SymbolList({ value, onCommit, label }: { value: string[]; onCommit: (value: string[]) => void; label: string }) {
+  const canonical = value.join(", ");
+  const [text, setText] = useState(canonical);
+  const [seen, setSeen] = useState(canonical);
+  if (seen !== canonical) {
+    setSeen(canonical);
+    setText(canonical);
+  }
+  const commit = () => {
+    const next = [...new Set(text.split(/[\s,]+/).map((symbol) => symbol.trim().toUpperCase()).filter(Boolean))];
+    if (next.length && next.join("|") !== value.join("|")) onCommit(next);
+    else setText(canonical);
+  };
+  return (
+    <input
+      aria-label={label}
+      value={text}
+      onChange={(event) => setText(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+        }
+      }}
+      className="w-full max-w-md rounded-lg border border-border bg-bg px-3 py-1.5 font-mono text-sm outline-none focus:border-accent"
+    />
   );
 }
 
@@ -123,7 +153,7 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
       )}
 
       <section className="rounded-xl border border-border bg-surface p-5">
-        <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Trading mode</h2>
+        <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Platform trading mode</h2>
         <Row label="Connection" hint="Change these in API connections above.">
           <span className="text-sm">
             Trading 212 <b>{t212Env}</b> · keys {hasT212Keys ? "found" : <b className="text-danger">missing</b>} · every decision is computed locally
@@ -142,10 +172,13 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
             </span>
           </Row>
         )}
-        <Row label="Ask me before every trade" hint="You approve or reject each proposal. No approval by the deadline means no trade.">
+        <Row label="Ask before overnight trades" hint="You approve or reject each overnight proposal. No approval by the deadline means no trade.">
           <Toggle on={s.approvalMode} onChange={(v) => save({ approvalMode: v })} label="Approval mode" />
         </Row>
-        <Row label="US market">
+        <Row label="Overnight strategy" hint="Runs the close-to-next-open model. It shares account risk and execution safety with the intraday strategy.">
+          <Toggle on={s.overnightEnabled} onChange={(v) => save({ overnightEnabled: v })} label="Overnight strategy" />
+        </Row>
+        <Row label="Overnight US market">
           <Toggle on={s.markets.US} onChange={(v) => save({ markets: { US: v } })} label="US market" />
         </Row>
         <Row label="Demo: always make a trade to learn from" hint="Demo mode only. If the engine would pass, it buys its best-ranked unflagged name anyway (no approval needed) so the real fill and overnight move become training data. Never applies in dry-run or live.">
@@ -156,9 +189,54 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
             <Num value={asPct(s.demoForceInvestPct)} step={1} suffix="%" onCommit={(v) => save({ demoForceInvestPct: v / 100 })} />
           </Row>
         )}
-        <Row label="UK market" hint="UK buys pay stamp duty, so a UK candidate has to clear a higher bar before it is worth taking.">
+        <Row label="Overnight UK market" hint="UK buys pay stamp duty, so a UK candidate has to clear a higher bar before it is worth taking.">
           <Toggle on={s.markets.UK} onChange={(v) => save({ markets: { UK: v } })} label="UK market" />
         </Row>
+      </section>
+
+      <section className="rounded-xl border border-border bg-surface p-5">
+        <h2 className="mb-1 text-sm font-semibold tracking-wide text-muted uppercase">Intraday momentum strategy</h2>
+        <p className="mb-1 text-xs text-muted">
+          Uses five-minute Yahoo bars and the shared one-minute scheduler. It only buys long, liquid stocks and manages stop, target, trailing and time exits.
+        </p>
+        <Row label="Generate intraday signals" hint="Runs scans and dry simulations. This does not grant order permission.">
+          <Toggle on={s.intraday.enabled} onChange={(v) => save({ intraday: { enabled: v } })} label="Intraday signals" />
+        </Row>
+        <Row label="Allow intraday orders" hint="Independent permission for this strategy. Global trading and live confirmation must also be enabled.">
+          <Toggle on={s.intraday.ordersEnabled} onChange={(v) => save({ intraday: { ordersEnabled: v } })} label="Intraday orders" />
+        </Row>
+        <Row label="Ask before intraday trades">
+          <Toggle on={s.intraday.approvalMode} onChange={(v) => save({ intraday: { approvalMode: v } })} label="Intraday approval mode" />
+        </Row>
+        <Row label="Intraday US market">
+          <Toggle on={s.intraday.usEnabled} onChange={(v) => save({ intraday: { usEnabled: v } })} label="Intraday US market" />
+        </Row>
+        <Row label="Intraday UK market">
+          <Toggle on={s.intraday.ukEnabled} onChange={(v) => save({ intraday: { ukEnabled: v } })} label="Intraday UK market" />
+        </Row>
+        <Row label="US watchlist" hint="Yahoo symbols separated by commas. Only matching Trading 212 stocks are considered.">
+          <SymbolList value={s.intraday.usWatchlist} onCommit={(v) => save({ intraday: { usWatchlist: v } })} label="US intraday watchlist" />
+        </Row>
+        <Row label="UK watchlist" hint="Use Yahoo's .L suffix for London-listed stocks.">
+          <SymbolList value={s.intraday.ukWatchlist} onCommit={(v) => save({ intraday: { ukWatchlist: v } })} label="UK intraday watchlist" />
+        </Row>
+        <Row label="Scan interval"><Num min={1} max={30} value={s.intraday.scanIntervalMinutes} suffix="minutes" onCommit={(v) => save({ intraday: { scanIntervalMinutes: v } })} /></Row>
+        <Row label="Maximum daily intraday trades"><Num min={1} max={10} value={s.intraday.maxTradesPerDay} suffix="trades" onCommit={(v) => save({ intraday: { maxTradesPerDay: v } })} /></Row>
+        <Row label="Cooldown after an exit"><Num min={5} max={240} value={s.intraday.cooldownMinutes} suffix="minutes" onCommit={(v) => save({ intraday: { cooldownMinutes: v } })} /></Row>
+        <Row label="Start entries after the open"><Num min={15} max={180} value={s.intraday.entryStartMinutesAfterOpen} suffix="minutes" onCommit={(v) => save({ intraday: { entryStartMinutesAfterOpen: v } })} /></Row>
+        <Row label="Stop entries before the close"><Num min={30} max={240} value={s.intraday.entryCutoffMinutesBeforeClose} suffix="minutes" onCommit={(v) => save({ intraday: { entryCutoffMinutesBeforeClose: v } })} /></Row>
+        <Row label="Maximum hold"><Num min={10} max={240} value={s.intraday.maxHoldMinutes} suffix="minutes" onCommit={(v) => save({ intraday: { maxHoldMinutes: v } })} /></Row>
+        <Row label="Position size" hint="Share of available cash requested; shared account caps can reduce it."><Num min={1} max={50} step={1} value={asPct(s.intraday.positionPct)} suffix="%" onCommit={(v) => save({ intraday: { positionPct: v / 100 } })} /></Row>
+        <Row label="Stop loss"><Num min={0.2} max={10} step={0.1} value={s.intraday.stopLossPct} suffix="%" onCommit={(v) => save({ intraday: { stopLossPct: v } })} /></Row>
+        <Row label="Profit target"><Num min={0.2} max={20} step={0.1} value={s.intraday.takeProfitPct} suffix="%" onCommit={(v) => save({ intraday: { takeProfitPct: v } })} /></Row>
+        <Row label="Trailing stop"><Num min={0.1} max={10} step={0.1} value={s.intraday.trailingStopPct} suffix="%" onCommit={(v) => save({ intraday: { trailingStopPct: v } })} /></Row>
+        <Row label="Minimum 20-minute momentum"><Num min={0.01} max={10} step={0.05} value={s.intraday.minMomentumPct} suffix="%" onCommit={(v) => save({ intraday: { minMomentumPct: v } })} /></Row>
+        <Row label="Maximum 20-minute momentum" hint="Rejects already-exhausted moves."><Num min={0.1} max={20} step={0.1} value={s.intraday.maxMomentumPct} suffix="%" onCommit={(v) => save({ intraday: { maxMomentumPct: v } })} /></Row>
+        <Row label="Minimum relative volume"><Num min={0.1} max={10} step={0.1} value={s.intraday.minRelativeVolume} suffix="x" onCommit={(v) => save({ intraday: { minRelativeVolume: v } })} /></Row>
+        <Row label="Minimum setup score"><Num min={40} max={95} value={s.intraday.minScore} suffix="/ 100" onCommit={(v) => save({ intraday: { minScore: v } })} /></Row>
+        <Row label="Minimum confidence"><Num min={50} max={95} step={1} value={asPct(s.intraday.minConfidence)} suffix="%" onCommit={(v) => save({ intraday: { minConfidence: v / 100 } })} /></Row>
+        <Row label="Minimum expected edge after costs"><Num min={0} max={5} step={0.05} value={s.intraday.minExpectedEdgePct} suffix="%" onCommit={(v) => save({ intraday: { minExpectedEdgePct: v } })} /></Row>
+        <Row label="Maximum quoted spread"><Num min={0.01} max={5} step={0.05} value={s.intraday.maxSpreadPct} suffix="%" onCommit={(v) => save({ intraday: { maxSpreadPct: v } })} /></Row>
       </section>
 
       <section className="rounded-xl border border-border bg-surface p-5">

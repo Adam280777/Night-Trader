@@ -104,7 +104,7 @@ export async function getLearning() {
       .from(trades)
       .innerJoin(decisions, eq(trades.decisionId, decisions.id))
       .innerJoin(runs, eq(trades.runId, runs.id))
-      .where(and(eq(trades.status, "closed"), isNotNull(trades.pnlPct)))
+      .where(and(eq(trades.status, "closed"), isNotNull(trades.pnlPct), eq(runs.strategy, "overnight")))
       .orderBy(asc(trades.exitAt)),
     db
       .select({ ticker: candidates.ticker, picked: candidates.picked, ret: candidates.overnightReturnPct, date: runs.tradingDate, market: runs.market })
@@ -130,6 +130,7 @@ export async function getDashboardInsights(limit = 180) {
       id: runs.id,
       date: runs.tradingDate,
       status: runs.status,
+      strategy: runs.strategy,
       market: runs.market,
       pnlPct: trades.pnlPct,
     })
@@ -139,13 +140,30 @@ export async function getDashboardInsights(limit = 180) {
     .limit(limit);
 
   const status = new Map<string, number>();
+  const strategies = new Map<string, { runs: number; trades: number; pnlPct: number; wins: number }>();
   for (const row of rows) status.set(row.status, (status.get(row.status) ?? 0) + 1);
+  for (const row of rows) {
+    const current = strategies.get(row.strategy) ?? { runs: 0, trades: 0, pnlPct: 0, wins: 0 };
+    current.runs++;
+    if (row.pnlPct != null) {
+      current.trades++;
+      current.pnlPct += row.pnlPct;
+      if (row.pnlPct > 0) current.wins++;
+    }
+    strategies.set(row.strategy, current);
+  }
   return {
     statuses: [...status].map(([label, value]) => ({ label: label.replaceAll("_", " "), value })),
     returns: rows
       .filter((row) => row.pnlPct != null)
       .map((row) => ({ date: row.date, value: row.pnlPct!, label: `${row.market} run #${row.id}` })),
     totalRuns: rows.length,
+    strategies: [...strategies].map(([strategy, value]) => ({
+      strategy,
+      ...value,
+      averageReturnPct: value.trades ? value.pnlPct / value.trades : null,
+      winRate: value.trades ? value.wins / value.trades : null,
+    })),
   };
 }
 

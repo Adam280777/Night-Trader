@@ -28,7 +28,7 @@ function LoginForm() {
   return (
     <form onSubmit={submit} className="w-full max-w-sm space-y-4 rounded-xl border border-border bg-surface p-6">
       <div className="flex items-center gap-2 text-base font-semibold">
-        <Lock className="size-5 text-accent" aria-hidden /> Overnight Trader
+        <Lock className="size-5 text-accent" aria-hidden /> Trading Bot
       </div>
       <label className="block text-sm">
         <span className="mb-1 block text-muted">Password</span>

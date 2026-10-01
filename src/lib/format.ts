@@ -40,7 +40,7 @@ export const STATUS: Record<string, { label: string; tone: Tone; hint: string }>
   awaiting_approval: { label: "Needs your approval", tone: "warn", hint: "Approve or reject the proposed trade." },
   ready_to_buy: { label: "Ready to buy", tone: "info", hint: "Will buy shortly before the close." },
   executing: { label: "Buying", tone: "info", hint: "Order is being placed." },
-  holding: { label: "Holding overnight", tone: "good", hint: "Will sell at the next open." },
+  holding: { label: "Position open", tone: "good", hint: "The active strategy is managing the position." },
   exiting: { label: "Selling", tone: "info", hint: "Sell order is working." },
   closed: { label: "Closed", tone: "neutral", hint: "Trade completed." },
   no_trade: { label: "No trade", tone: "neutral", hint: "Sat out today." },

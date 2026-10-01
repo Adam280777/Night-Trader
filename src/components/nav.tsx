@@ -24,7 +24,7 @@ export function Nav() {
     <nav className="border-b border-border bg-surface md:sticky md:top-0 md:h-screen md:w-56 md:shrink-0 md:border-r md:border-b-0">
       <div className="flex items-center gap-2 px-5 py-4 text-base font-semibold">
         <Activity className="size-5 text-accent" aria-hidden />
-        Overnight Trader
+        Trading Bot
       </div>
       <ul className="flex gap-1 overflow-x-auto px-3 pb-3 md:flex-col md:pb-0">
         {ITEMS.map(({ href, label, icon: Icon }) => {

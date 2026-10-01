@@ -26,7 +26,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   return (
     <>
       <Link href="/history" className="mb-3 inline-block text-sm text-muted hover:text-fg">Back to history</Link>
-      <PageHeader title={`${run.market} · ${run.tradingDate}`} subtitle={run.error ?? st.hint} right={<Badge tone={st.tone}>{st.label}</Badge>} />
+      <PageHeader
+        title={`${run.strategy === "intraday_momentum" ? "Intraday momentum" : "Overnight"} · ${run.market} · ${run.tradingDate}`}
+        subtitle={run.error ?? (run.strategy === "intraday_momentum" && run.status === "ready_to_buy" ? "Signal approved; waiting for the next guarded entry attempt." : st.hint)}
+        right={<Badge tone={st.tone}>{st.label}</Badge>}
+      />
 
       {decision && (
         <Card title="Decision" className="mb-4">
@@ -65,6 +69,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
             <Stat label="Result" value={trade.status === "closed" ? pct(trade.pnlPct) : "Open"} tone={tone(trade.pnlPct)} sub={trade.pnl != null ? money(trade.pnl) : undefined} />
             <Stat label="Bought" value={trade.entryPrice?.toFixed(2) ?? "n/a"} sub={`${trade.quantity} @ ${when(trade.entryAt)}`} />
             <Stat label="Sold" value={trade.exitPrice?.toFixed(2) ?? "n/a"} sub={when(trade.exitAt)} />
+            <Stat label="Exit reason" value={trade.exitReason ?? (trade.status === "open" ? "Monitoring" : "n/a")} sub={trade.plannedExitAt ? `Time exit ${when(trade.plannedExitAt)}` : undefined} />
           </div>
           {trade.review && <p className="mt-4 rounded-lg bg-surface-2 p-3 text-sm"><b>Post-mortem:</b> {trade.review}</p>}
           {lessons.length > 0 && (

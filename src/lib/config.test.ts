@@ -27,6 +27,11 @@ describe("settings patch", () => {
     expect(parsed.quant).toEqual({ kellyFraction: 0.3 });
   });
 
+  it("keeps intraday strategy patches limited to the submitted key", () => {
+    const parsed = SettingsPatchSchema.parse({ intraday: { scanIntervalMinutes: 10 } });
+    expect(parsed.intraday).toEqual({ scanIntervalMinutes: 10 });
+  });
+
   it("still rejects invalid values", () => {
     expect(SettingsPatchSchema.safeParse({ approvalMode: "yes" }).success).toBe(false);
     expect(SettingsPatchSchema.safeParse({ maxPositionPct: 5 }).success).toBe(false);

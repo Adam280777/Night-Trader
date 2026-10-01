@@ -18,6 +18,8 @@ export interface GuardrailInput {
    * point of it). Every safety check - kill switch, loss limits, sizing, instrument type - still applies.
    */
   exploration?: boolean;
+  /** Strategy-specific evidence thresholds. Account-wide safety caps still come from Settings. */
+  minimums?: { confidence: number; expectedEdgePct: number };
 }
 
 export interface GuardrailResult {
@@ -45,7 +47,7 @@ export function evaluateGuardrails(i: GuardrailInput): GuardrailResult {
   if (i.instrument.type !== "STOCK") reasons.push(`Instrument type ${i.instrument.type} not allowed; single stocks only.`);
   if (LEVERAGED.test(i.instrument.name)) reasons.push("Leveraged/inverse products are not allowed.");
 
-  const minConf = i.market === "UK" ? Math.max(s.minConfidence, s.ukMinConfidence) : s.minConfidence;
+  const minConf = i.minimums?.confidence ?? (i.market === "UK" ? Math.max(s.minConfidence, s.ukMinConfidence) : s.minConfidence);
   if (i.exploration) {
     notes.push("Demo exploration trade: confidence and edge minimums waived so the outcome can be learned from.");
   } else if (i.proposal.confidence < minConf) {
@@ -54,9 +56,10 @@ export function evaluateGuardrails(i: GuardrailInput): GuardrailResult {
 
   const cost = estimatedRoundTripCostPct(i.market, s.quant);
   const netEdge = i.proposal.expectedMovePct - cost;
-  if (!i.exploration && netEdge < s.minExpectedEdgePct) {
+  const minEdge = i.minimums?.expectedEdgePct ?? s.minExpectedEdgePct;
+  if (!i.exploration && netEdge < minEdge) {
     reasons.push(
-      `Expected move ${i.proposal.expectedMovePct.toFixed(2)}% minus ~${cost.toFixed(2)}% costs leaves ${netEdge.toFixed(2)}%, below the ${s.minExpectedEdgePct}% minimum.`,
+      `Expected move ${i.proposal.expectedMovePct.toFixed(2)}% minus ~${cost.toFixed(2)}% costs leaves ${netEdge.toFixed(2)}%, below the ${minEdge}% minimum.`,
     );
   }
 

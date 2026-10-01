@@ -17,7 +17,11 @@ export async function scoreOutcomes(onlyRunId?: number): Promise<number> {
     .select({ c: candidates, run: runs })
     .from(candidates)
     .innerJoin(runs, eq(candidates.runId, runs.id))
-    .where(onlyRunId ? and(isNull(candidates.overnightReturnPct), eq(runs.id, onlyRunId)) : isNull(candidates.overnightReturnPct))
+    .where(
+      onlyRunId
+        ? and(isNull(candidates.overnightReturnPct), eq(runs.id, onlyRunId), eq(runs.strategy, "overnight"))
+        : and(isNull(candidates.overnightReturnPct), eq(runs.strategy, "overnight")),
+    )
     .all();
 
   const barsCache = new Map<string, Awaited<ReturnType<typeof getDailyBars>>>();
