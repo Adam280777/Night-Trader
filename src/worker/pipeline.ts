@@ -312,7 +312,9 @@ export async function stageDecide(runId: number): Promise<void> {
     }
     if (chosenRow) await db.update(candidates).set({ picked: true }).where(eq(candidates.id, chosenRow.id));
 
-    const { result } = await checkDecisionGuardrails(row.id, minutesToClose(), acct);
+    // An intraday position may still be winding down while overnight research finishes. Position
+    // ownership is transient, so defer that one check until executeBuy re-runs every guardrail.
+    const { result } = await checkDecisionGuardrails(row.id, minutesToClose(), acct, { ignoreOpenPosition: true });
     await db
       .update(decisions)
       .set({ guardrailNotes: [...lessonNotes, ...result.notes, ...result.reasons.map((r) => `BLOCKED: ${r}`)] })

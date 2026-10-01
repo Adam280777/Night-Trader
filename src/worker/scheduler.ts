@@ -186,10 +186,6 @@ async function ensureRun(market: Market, deps: SchedulerDeps): Promise<EnsureSta
   if (now.getTime() < start) return { text: `Run window opens ${hhmm(start)}` };
   if (now.getTime() >= end) return { text: `Run window closed at ${hhmm(end)}` };
 
-  // One position at a time: never open a second run while a trade is open.
-  const [openTrade] = await db.select({ id: trades.id }).from(trades).where(eq(trades.status, "open")).limit(1);
-  if (openTrade) return { text: "A position is still open; one trade at a time", notable: true };
-
   const tradingDate = tradingDateOf(market, session.close);
   const [existing] = await db
     .select({ id: runs.id, status: runs.status })
@@ -202,7 +198,11 @@ async function ensureRun(market: Market, deps: SchedulerDeps): Promise<EnsureSta
   const [sameDayTrade] = await db
     .select({ id: runs.id })
     .from(runs)
-    .where(and(eq(runs.tradingDate, tradingDate), inArray(runs.status, ["holding", "exiting", "executing"])))
+    .where(and(
+      eq(runs.tradingDate, tradingDate),
+      eq(runs.strategy, "overnight"),
+      inArray(runs.status, ["holding", "exiting", "executing"]),
+    ))
     .limit(1);
   if (sameDayTrade) return { text: `Run #${sameDayTrade.id} already holds a position for ${tradingDate}`, notable: true };
 
@@ -322,13 +322,22 @@ export async function tick(deps: SchedulerDeps = realClock): Promise<TickResult>
       const client = await tryClient();
       if (client) {
         for (const market of MARKETS) {
+          const remainingMs = TICK_BUDGET_MS - (Date.now() - startedAt);
+          if (remainingMs < 30_000) break;
           if (!(await every(`intraday-scan:${market}`, minutes(settings.intraday.scanIntervalMinutes), nowMs))) continue;
           try {
             const session = currentOrNextSession(await getMarketSessions(client, market), deps.now());
             if (!session) continue;
-            const scan = await traced(`intraday-scan-${market.toLowerCase()}`, () => scanIntradayMarket(market, session, deps.now()), {
+            const scanDeadline = Date.now() + Math.min(60_000, remainingMs - 20_000);
+            const scan = await traced(`intraday-scan-${market.toLowerCase()}`, () => scanIntradayMarket(market, session, deps.now(), scanDeadline), {
               ...traceOptions,
-              detail: (value) => ({ created: value.created, message: value.message, candidates: value.candidates }),
+              detail: (value) => ({
+                created: value.created,
+                message: value.message,
+                candidates: value.candidates,
+                source: value.source,
+                charted: value.charted,
+              }),
               summary: (value) => value.message,
             });
             if (scan.ok) {

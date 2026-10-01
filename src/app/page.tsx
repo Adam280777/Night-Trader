@@ -176,7 +176,7 @@ export default async function Dashboard() {
               <p className="mt-3 text-xs text-muted">
                 {strategy === "overnight"
                   ? `${settings.markets.US ? "US " : ""}${settings.markets.UK ? "UK" : ""} close-to-open model.`
-                  : `${settings.intraday.usEnabled ? "US " : ""}${settings.intraday.ukEnabled ? "UK" : ""} scans every ${settings.intraday.scanIntervalMinutes} minutes; ${settings.intraday.ordersEnabled ? "orders permitted" : "signals and dry simulation only"}.`}
+                  : `${settings.intraday.usEnabled ? "US " : ""}${settings.intraday.ukEnabled ? "UK" : ""} ${settings.intraday.universeMode === "manual" ? "manual universe" : "automatic full-market discovery"} every ${settings.intraday.scanIntervalMinutes} minutes; ${settings.intraday.ordersEnabled ? "orders permitted" : "signals and dry simulation only"}.`}
               </p>
             </Card>
           );

@@ -64,6 +64,13 @@
       "when": 1790882469606,
       "tag": "0008_workable_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1790884036952,
+      "tag": "0009_tricky_mandroid",
+      "breakpoints": true
     }
   ]
 }

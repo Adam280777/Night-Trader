@@ -214,10 +214,38 @@ export function SettingsForm({ settings, t212Env, hasT212Keys }: Props) {
         <Row label="Intraday UK market">
           <Toggle on={s.intraday.ukEnabled} onChange={(v) => save({ intraday: { ukEnabled: v } })} label="Intraday UK market" />
         </Row>
-        <Row label="US watchlist" hint="Yahoo symbols separated by commas. Only matching Trading 212 stocks are considered.">
+        <Row label="Stock universe" hint="Automatic rotates through all eligible Trading 212 stocks via continuous study. Hybrid puts manual symbols first; Manual uses only the lists below.">
+          <select
+            aria-label="Intraday stock universe"
+            value={s.intraday.universeMode}
+            onChange={(event) => save({ intraday: { universeMode: event.target.value } })}
+            className="rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+          >
+            <option value="auto">Automatic full-market discovery</option>
+            <option value="hybrid">Automatic plus manual priority</option>
+            <option value="manual">Manual symbols only</option>
+          </select>
+        </Row>
+        {s.intraday.universeMode !== "manual" && (
+          <>
+            <Row label="Automatic candidate pool" hint="Highest-ranked, recently studied stocks retained before live quote filtering.">
+              <Num min={10} max={60} value={s.intraday.dynamicUniverseSize} suffix="stocks" onCommit={(v) => save({ intraday: { dynamicUniverseSize: v } })} />
+            </Row>
+            <Row label="Minimum study observations" hint="How many full-market study rounds must score a stock before automatic selection trusts it.">
+              <Num min={1} max={20} value={s.intraday.minUniverseObservations} suffix="observations" onCommit={(v) => save({ intraday: { minUniverseObservations: v } })} />
+            </Row>
+            <Row label="Maximum knowledge age" hint="Automatically selected names must have been rescored within this period.">
+              <Num min={1} max={168} value={s.intraday.universeMaxAgeHours} suffix="hours" onCommit={(v) => save({ intraday: { universeMaxAgeHours: v } })} />
+            </Row>
+          </>
+        )}
+        <Row label="Five-minute charts per scan" hint="Fresh quotes rank the full candidate pool first. Only this many expensive intraday histories are downloaded each scan.">
+          <Num min={4} max={30} value={s.intraday.maxChartsPerScan} suffix="stocks" onCommit={(v) => save({ intraday: { maxChartsPerScan: v } })} />
+        </Row>
+        <Row label={s.intraday.universeMode === "manual" ? "US symbols" : "US bootstrap / priority symbols"} hint="Used until automatic study has enough evidence, and always prioritised in Hybrid mode. Yahoo symbols separated by commas.">
           <SymbolList value={s.intraday.usWatchlist} onCommit={(v) => save({ intraday: { usWatchlist: v } })} label="US intraday watchlist" />
         </Row>
-        <Row label="UK watchlist" hint="Use Yahoo's .L suffix for London-listed stocks.">
+        <Row label={s.intraday.universeMode === "manual" ? "UK symbols" : "UK bootstrap / priority symbols"} hint="Use Yahoo's .L suffix for London-listed stocks.">
           <SymbolList value={s.intraday.ukWatchlist} onCommit={(v) => save({ intraday: { ukWatchlist: v } })} label="UK intraday watchlist" />
         </Row>
         <Row label="Scan interval"><Num min={1} max={30} value={s.intraday.scanIntervalMinutes} suffix="minutes" onCommit={(v) => save({ intraday: { scanIntervalMinutes: v } })} /></Row>

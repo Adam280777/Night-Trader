@@ -268,6 +268,8 @@ export const knowledge = sqliteTable(
     overnightRisk: text("overnight_risk"),
     /** When research was last refreshed; null means signals only so far. */
     researchedAt: integer("researched_at", { mode: "timestamp_ms" }),
+    /** Last time a full-market study round recomputed price/liquidity signals for this symbol. */
+    observedAt: integer("observed_at", { mode: "timestamp_ms" }),
     /** When this symbol's price history was replayed into the model; null until it has been. */
     backfilledAt: integer("backfilled_at", { mode: "timestamp_ms" }),
     firstSeenAt: createdAt(),

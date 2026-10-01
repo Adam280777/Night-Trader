@@ -3,12 +3,16 @@
 A serverless quantitative trading platform that coordinates two strategies on one Trading 212 account:
 
 - **Overnight** researches liquid stocks, enters shortly before the close, and exits at the next open.
-- **Intraday momentum** scans an operator-owned liquid-stock watchlist using five-minute bars, enters only during a configured window, and manages stop, target, trailing-stop, maximum-hold, and session-close exits.
+- **Intraday momentum** discovers candidates automatically from the complete Trading 212 stock universe, confirms the best live setups with five-minute bars, enters only during a configured window, and manages stop, target, trailing-stop, maximum-hold, and session-close exits.
 
 Both strategies run through one scheduler, database, order-safety layer, dashboard, and audit trail. They are
 configured independently but share the kill switch, unknown-order pause, account cash and position caps, loss
 circuit breakers, execution telemetry, and the rule that only one position can be open at a time. Runs fully in
 the cloud, so your PC can be off.
+
+The scheduler coordinates capital rather than running two independent bots: overnight research may continue while
+an intraday trade finishes, but a new intraday entry is withheld when its maximum hold could overlap an upcoming
+overnight buy window. Every order is still rechecked against the shared account immediately before submission.
 
 **No AI provider, no AI API keys, no per-run cost.** Every decision is made by a quantitative engine that runs inside
 the app: a logistic model trained on the app's own past outcomes, conditional historical analogues of each stock's
@@ -19,20 +23,24 @@ state, orders, positions, and authoritative fills.
 ## How the intraday strategy works
 
 1. The one-minute scheduler checks whether each enabled market is inside its configured entry window.
-2. On the configured scan interval, Yahoo five-minute bars and a timestamped quote are loaded for the configured
-   watchlist. Symbols must also map to a liquid, non-leveraged Trading 212 stock.
-3. A deterministic momentum setup checks 20-minute movement, fast/slow EMA alignment, VWAP, relative volume,
+2. Continuous study rotates through every eligible Trading 212 stock in bounded slices, recording liquidity,
+   momentum, volume and historical evidence. Each intraday scan takes the strongest recently studied names.
+3. Fresh quotes prefilter that dynamic pool for price movement, volume, spread and data age. Only the configured
+   top number receive the more expensive Yahoo five-minute history request, keeping Vercel execution bounded.
+4. A deterministic momentum setup checks 20-minute movement, fast/slow EMA alignment, VWAP, relative volume,
    recent-high breakout, quote freshness, and quoted spread. Every threshold is configurable.
-4. The best passing setup becomes a normal persisted run and decision. It uses the same approval flow, fresh
+5. The best passing setup becomes a normal persisted run and decision. It uses the same approval flow, fresh
    account checks, sizing caps, order-intent persistence, fill reconciliation, slippage measurement, and
    unknown-outcome pause as the overnight strategy.
-5. Each scheduler tick manages an open intraday trade. Stop loss, profit target, trailing stop, maximum hold time,
+6. Each scheduler tick manages an open intraday trade. Stop loss, profit target, trailing stop, maximum hold time,
    and a close-of-session deadline can initiate an exit. The exact app-owned quantity is sold.
-6. Daily trade limits and an exit cooldown prevent repeated churn. Intraday results are reported separately and
+7. Daily trade limits and an exit cooldown prevent repeated churn. Intraday results are reported separately and
    never train or contaminate the overnight close-to-open model.
 
 The intraday module starts with signal generation enabled but **intraday order permission disabled**. Global order
-placement and, for live accounts, the typed live confirmation are additional independent gates.
+placement and, for live accounts, the typed live confirmation are additional independent gates. Automatic mode
+uses the manual symbol lists only as a bootstrap fallback until continuous study has enough current evidence;
+Hybrid mode also gives those symbols priority, and Manual mode remains available for controlled experiments.
 
 ## How the decision is made
 

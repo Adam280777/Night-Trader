@@ -98,7 +98,11 @@ export async function studyRound(deadline: number): Promise<StudyResult> {
   const t = settings.quant;
   if (!t.continuousResearch) return { ran: false, skipped: "continuous study is off" };
 
-  const enabled = (["US", "UK"] as Market[]).filter((m) => settings.markets[m]);
+  const enabled = (["US", "UK"] as Market[]).filter(
+    (market) =>
+      settings.markets[market] ||
+      (settings.intraday.enabled && (market === "US" ? settings.intraday.usEnabled : settings.intraday.ukEnabled)),
+  );
   if (enabled.length === 0) return { ran: false, skipped: "no markets enabled" };
 
   const client = await tryClient();

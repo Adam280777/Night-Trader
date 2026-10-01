@@ -12,6 +12,7 @@ export async function checkDecisionGuardrails(
   decisionId: number,
   minutesToClose: number,
   account?: AccountState,
+  options: { ignoreOpenPosition?: boolean } = {},
 ): Promise<{ result: GuardrailResult; account: AccountState; instrument: { type: string; name: string; currencyCode: string } | null }> {
   const db = getDb();
   const d = await db.select().from(schema.decisions).where(eq(schema.decisions.id, decisionId)).get();
@@ -31,7 +32,7 @@ export async function checkDecisionGuardrails(
     instrument: { type: inst?.type ?? "STOCK", name: inst?.name ?? d.name ?? "" },
     account: { totalValue: acct.totalValue, availableCash: acct.availableCash },
     pnl: await pnlWindows(acct.totalValue),
-    hasOpenPosition: !!await openTrade(),
+    hasOpenPosition: options.ignoreOpenPosition ? false : !!await openTrade(),
     minutesToClose,
     exploration: d.forced && run.mode === "demo",
     minimums: run.strategy === "intraday_momentum"

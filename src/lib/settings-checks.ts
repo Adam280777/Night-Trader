@@ -29,6 +29,15 @@ export function settingsIssues(s: Settings): SettingsIssue[] {
   if (s.tradingEnabled && s.overnightEnabled && !s.approvalMode) add("info", "approval", "Overnight orders will be placed without asking you first.");
   if (s.intraday.ordersEnabled && !s.tradingEnabled) add("info", "intraday", "Intraday order permission is on, but global order placement is off, so intraday runs remain dry.");
   if (s.intraday.ordersEnabled && !s.intraday.approvalMode) add("warn", "intraday", "Intraday orders can be placed without approval when global trading is enabled.");
+  if (s.intraday.universeMode !== "manual" && !s.quant.continuousResearch) {
+    add("warn", "intraday", "Automatic intraday discovery needs continuous study, but continuous study is switched off. Bootstrap symbols will be used instead.");
+  }
+  if (s.intraday.maxChartsPerScan > s.intraday.dynamicUniverseSize && s.intraday.universeMode !== "manual") {
+    add("info", "intraday", "The chart limit exceeds the automatic candidate pool, so the pool size is the effective limit.");
+  }
+  if (s.intraday.minUniverseObservations > 5) {
+    add("info", "intraday", "A high observation requirement can make new stocks take several full-market rotations to enter the intraday pool.");
+  }
   if (s.intraday.stopLossPct >= s.intraday.takeProfitPct) add("warn", "intraday", "The intraday stop is at least as wide as the target, producing an unfavourable reward-to-risk ratio.");
   if (s.intraday.trailingStopPct >= s.intraday.takeProfitPct) add("info", "intraday", "The trailing stop is as wide as the profit target, so it is unlikely to protect much open profit.");
   if (s.intraday.entryStartMinutesAfterOpen + s.intraday.entryCutoffMinutesBeforeClose >= 360) {

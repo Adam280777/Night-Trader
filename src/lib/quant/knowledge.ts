@@ -43,6 +43,7 @@ export async function recordObservations(cands: Candidate[]): Promise<void> {
         bestScore: c.score,
         observations: 1,
         signals: { ...c.signals } as KnowledgeRow["signals"],
+        observedAt: now,
         updatedAt: now,
       })
       .onConflictDoUpdate({
@@ -57,6 +58,7 @@ export async function recordObservations(cands: Candidate[]): Promise<void> {
           avgScore: sql`((coalesce(${knowledge.avgScore}, 0) * ${knowledge.observations}) + ${c.score}) / (${knowledge.observations} + 1)`,
           bestScore: sql`max(coalesce(${knowledge.bestScore}, ${c.score}), ${c.score})`,
           signals: { ...c.signals } as KnowledgeRow["signals"],
+          observedAt: now,
           updatedAt: now,
         },
       });
@@ -95,12 +97,21 @@ export function freshResearchOf(row: KnowledgeRow | undefined, ttlHours: number,
  * Names the base rates highly and has seen often enough to believe. Used to give tonight's
  * shortlist a few extra slots for symbols with a record, rather than only today's best screens.
  */
-export async function provenSymbols(market: Market, opts: { minObservations: number; limit: number; exclude?: Set<string> }): Promise<KnowledgeRow[]> {
+export async function provenSymbols(
+  market: Market,
+  opts: { minObservations: number; limit: number; exclude?: Set<string>; maxAgeHours?: number },
+): Promise<KnowledgeRow[]> {
   if (opts.limit <= 0) return [];
+  const filters = [
+    eq(knowledge.market, market),
+    gte(knowledge.observations, opts.minObservations),
+    isNotNull(knowledge.avgScore),
+  ];
+  if (opts.maxAgeHours != null) filters.push(gte(knowledge.observedAt, new Date(Date.now() - opts.maxAgeHours * 3_600_000)));
   const rows = await getDb()
     .select()
     .from(knowledge)
-    .where(and(eq(knowledge.market, market), gte(knowledge.observations, opts.minObservations), isNotNull(knowledge.avgScore)))
+    .where(and(...filters))
     .orderBy(desc(knowledge.avgScore))
     .limit(opts.limit + (opts.exclude?.size ?? 0));
   return rows.filter((r) => !opts.exclude?.has(r.ticker)).slice(0, opts.limit);

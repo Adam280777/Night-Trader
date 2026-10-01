@@ -1,0 +1,1 @@
+ALTER TABLE `knowledge` ADD `observed_at` integer;

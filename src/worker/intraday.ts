@@ -1,7 +1,9 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { currentMode, getSettings } from "../lib/config";
 import { getDb, schema } from "../lib/db";
 import { analyseIntraday } from "../lib/intraday/strategy";
+import { selectUniverse, type UniverseSymbol } from "../lib/intraday/universe";
+import { overlappingOvernightRun } from "../lib/intraday/coordination";
 import { log } from "../lib/log";
 import { getIntradayBars, getQuotes, yahooSymbol } from "../lib/market/data";
 import type { Session } from "../lib/market/calendar";
@@ -10,6 +12,7 @@ import { estimatedRoundTripCostPct } from "../lib/risk/guardrails";
 import { getInstrumentsCached, marketOf, type Market } from "../lib/t212/instruments";
 import { adverseSlippagePct, findHistorical, submitMarketOrder, waitForOrder } from "../lib/t212/safeOrder";
 import { tryClient } from "../lib/account";
+import { provenSymbols } from "../lib/quant/knowledge";
 import { executeBuy } from "./execute";
 import { setRunStatus } from "./pipeline";
 
@@ -20,14 +23,40 @@ interface ScanResult {
   created: boolean;
   message: string;
   candidates: number;
+  source?: string;
+  charted?: number;
 }
 
 function insideEntryWindow(session: Session, nowMs: number, afterOpen: number, beforeClose: number) {
   return nowMs >= session.open.getTime() + afterOpen * 60_000 && nowMs < session.close.getTime() - beforeClose * 60_000;
 }
 
-/** Scan a small operator-owned watchlist and persist only actionable setups. */
-export async function scanIntradayMarket(market: Market, session: Session, now = new Date()): Promise<ScanResult> {
+async function mapLimited<T, R>(
+  rows: T[],
+  concurrency: number,
+  deadline: number,
+  fn: (row: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, rows.length) }, async () => {
+      while (next < rows.length && Date.now() < deadline - 16_000) {
+        const index = next++;
+        results.push(await fn(rows[index]));
+      }
+    }),
+  );
+  return results;
+}
+
+/** Build a fresh intraday pool from the continuously studied full market, then persist actionable setups. */
+export async function scanIntradayMarket(
+  market: Market,
+  session: Session,
+  now = new Date(),
+  deadline = Date.now() + 60_000,
+): Promise<ScanResult> {
   const settings = await getSettings();
   const tuning = settings.intraday;
   if (!tuning.enabled || (market === "US" ? !tuning.usEnabled : !tuning.ukEnabled)) {
@@ -41,12 +70,31 @@ export async function scanIntradayMarket(market: Market, session: Session, now =
   const db = getDb();
   const [open] = await db.select({ id: trades.id }).from(trades).where(eq(trades.status, "open")).limit(1);
   if (open) return { created: false, message: "A position is already open", candidates: 0 };
+  const upcomingOvernight = await db
+    .select({ id: runs.id, sessionCloseAt: runs.sessionCloseAt })
+    .from(runs)
+    .where(and(
+      eq(runs.strategy, "overnight"),
+      notInArray(runs.status, ["closed", "no_trade", "blocked", "failed", "skipped"]),
+    ));
+  const protectedRun = overlappingOvernightRun(
+    upcomingOvernight,
+    now.getTime(),
+    tuning.maxHoldMinutes,
+    settings.minutesBeforeCloseToBuy,
+  );
+  if (protectedRun) {
+    return {
+      created: false,
+      message: `Capital reserved for overnight run #${protectedRun.id}; a new intraday hold could overlap its buy window`,
+      candidates: 0,
+    };
+  }
   const [activeIntraday] = await db
     .select({ id: runs.id })
     .from(runs)
     .where(and(
       eq(runs.strategy, "intraday_momentum"),
-      eq(runs.market, market),
       inArray(runs.status, ["awaiting_approval", "ready_to_buy", "executing", "holding", "exiting"]),
     ))
     .limit(1);
@@ -75,38 +123,87 @@ export async function scanIntradayMarket(market: Market, session: Session, now =
   const client = await tryClient();
   if (!client) return { created: false, message: "Trading 212 credentials are required for the instrument map", candidates: 0 };
   const instruments = await getInstrumentsCached(client);
+  const marketInstruments = instruments.filter((instrument) => instrument.type === "STOCK" && marketOf(instrument) === market);
+  const instrumentByTicker = new Map(marketInstruments.map((instrument) => [instrument.ticker, instrument]));
   const watchlist = market === "US" ? tuning.usWatchlist : tuning.ukWatchlist;
   const wanted = new Set(watchlist.map((symbol) => symbol.toUpperCase()));
-  const mapped = instruments
-    .filter((instrument) => instrument.type === "STOCK" && marketOf(instrument) === market)
+  const manual: UniverseSymbol[] = marketInstruments
     .map((instrument) => ({ instrument, symbol: yahooSymbol(instrument) }))
-    .filter((row): row is { instrument: (typeof instruments)[number]; symbol: string } => !!row.symbol && wanted.has(row.symbol.toUpperCase()));
-  if (!mapped.length) return { created: false, message: "No watchlist symbols matched Trading 212 instruments", candidates: 0 };
+    .filter((row): row is { instrument: (typeof instruments)[number]; symbol: string } => !!row.symbol && wanted.has(row.symbol.toUpperCase()))
+    .map(({ instrument, symbol }) => ({ ticker: instrument.ticker, symbol, name: instrument.name, knowledgeScore: 0 }));
+  const learnedRows = tuning.universeMode === "manual"
+    ? []
+    : await provenSymbols(market, {
+        minObservations: tuning.minUniverseObservations,
+        limit: tuning.dynamicUniverseSize,
+        maxAgeHours: tuning.universeMaxAgeHours,
+      });
+  const learned: UniverseSymbol[] = learnedRows
+    .filter((row) => instrumentByTicker.has(row.ticker))
+    .map((row) => ({
+      ticker: row.ticker,
+      symbol: row.symbol,
+      name: row.name ?? row.ticker,
+      knowledgeScore: row.avgScore ?? row.screenScore ?? 0,
+    }));
+  const selection = selectUniverse(learned, manual, tuning.universeMode, tuning.dynamicUniverseSize);
+  const mapped = selection.symbols.flatMap((row) => {
+    const instrument = instrumentByTicker.get(row.ticker);
+    return instrument ? [{ ...row, instrument }] : [];
+  });
+  if (!mapped.length) {
+    return { created: false, message: `No ${market} stocks are available in the ${selection.source} intraday pool`, candidates: 0, source: selection.source };
+  }
 
-  const quoteMap = await getQuotes(mapped.map((row) => row.symbol));
-  const evaluations = await Promise.all(
-    mapped.map(async (row) => {
+  const quoteMap = await getQuotes(mapped.map((row) => row.symbol), deadline);
+  const maxAge = market === "UK" ? settings.ops.maxUkQuoteAgeSeconds : settings.ops.maxUsQuoteAgeSeconds;
+  const livePool = mapped
+    .flatMap((row) => {
+      const quote = quoteMap.get(row.symbol);
+      if (!quote || quote.quoteAt == null || now.getTime() - quote.quoteAt > maxAge * 1000) return [];
+      if (quote.spreadPct != null && quote.spreadPct > tuning.maxSpreadPct) return [];
+      const volumeRatio = quote.avgVolume3m > 0 ? quote.volume / quote.avgVolume3m : 0;
+      const dollarVolume = quote.price * quote.volume;
+      const preScore =
+        Math.max(0, quote.changePct) * 4 +
+        Math.min(2, volumeRatio) * 8 +
+        Math.max(0, Math.log10(Math.max(1, dollarVolume)) - 5) * 3 +
+        row.knowledgeScore * 0.1;
+      return [{ ...row, quote, preScore }];
+    })
+    .sort((a, b) => b.preScore - a.preScore);
+  const chartPool = livePool.slice(0, tuning.maxChartsPerScan);
+  const evaluations = await mapLimited(
+    chartPool,
+    4,
+    deadline,
+    async (row) => {
       try {
         const allBars = await getIntradayBars(row.symbol);
         const bars = allBars.filter((bar) => tradingDateOf(market, bar.date) === tradingDate && bar.date.getTime() <= now.getTime());
         const signal = analyseIntraday(row.symbol, bars, tuning);
-        const quote = quoteMap.get(row.symbol);
-        if (!signal || !quote || quote.quoteAt == null) return null;
-        const maxAge = market === "UK" ? settings.ops.maxUkQuoteAgeSeconds : settings.ops.maxUsQuoteAgeSeconds;
-        if (now.getTime() - quote.quoteAt > maxAge * 1000) return null;
-        if (quote.spreadPct != null && quote.spreadPct > tuning.maxSpreadPct) return null;
-        return { ...row, signal: { ...signal, price: quote.price }, quote };
+        if (!signal) return null;
+        return { ...row, signal: { ...signal, price: row.quote.price } };
       } catch (error) {
         await log("warn", "intraday", `Could not evaluate ${row.symbol}: ${String(error).slice(0, 160)}`);
         return null;
       }
-    }),
+    },
   );
   const ranked = evaluations
     .filter((row): row is NonNullable<typeof row> => row != null)
     .sort((a, b) => b.signal.score - a.signal.score);
   const best = ranked[0];
-  if (!best) return { created: false, message: `No ${market} watchlist name passed the intraday rules`, candidates: mapped.length };
+  const charted = evaluations.length;
+  if (!best) {
+    return {
+      created: false,
+      message: `No ${market} stock passed after charting ${charted} of ${mapped.length} ${selection.source} candidates`,
+      candidates: mapped.length,
+      source: selection.source,
+      charted,
+    };
+  }
 
   const requestedMode = await currentMode(settings);
   const mode = tuning.ordersEnabled ? requestedMode : "dry";
@@ -172,7 +269,13 @@ export async function scanIntradayMarket(market: Market, session: Session, now =
     signal: best.signal,
     spreadPct: best.quote.spreadPct,
   });
-  return { created: true, message: `Created intraday run #${run.id}`, candidates: mapped.length };
+  return {
+    created: true,
+    message: `Created intraday run #${run.id} from the ${selection.source} pool (${charted} charts from ${mapped.length} candidates)`,
+    candidates: mapped.length,
+    source: selection.source,
+    charted,
+  };
 }
 
 async function latestDecision(runId: number) {
