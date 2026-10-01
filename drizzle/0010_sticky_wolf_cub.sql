@@ -78,21 +78,3 @@ ALTER TABLE `trades` ADD `slippage_cost` real;--> statement-breakpoint
 ALTER TABLE `trades` ADD `fx_impact` real;--> statement-breakpoint
 ALTER TABLE `trades` ADD `benchmark_return_pct` real;--> statement-breakpoint
 ALTER TABLE `trades` ADD `selection_return_pct` real;
---> statement-breakpoint
-INSERT INTO `model_versions` (
-	`model_name`, `scope`, `state`, `samples`, `training_from`, `training_to`,
-	`last_candidate_id`, `settings_fingerprint`, `settings`, `metrics`, `created_at`
-)
-SELECT
-	`name`, 'shared', `state`, `samples`, 'legacy', 'legacy',
-	json_extract(`state`, '$.lastCandidateId'), 'legacy', '{}',
-	'{"calibrationError":null,"brier":null,"baselineBrier":null,"meanAfterCostReturnPct":null,"maxDrawdownPct":null,"predictedTradeFrequency":null}',
-	CAST(strftime('%s', 'now') AS integer) * 1000
-FROM `model_state`
-WHERE `name` = 'overnight_v1';
---> statement-breakpoint
-INSERT OR IGNORE INTO `model_deployments` (`scope`, `champion_version_id`, `updated_at`)
-SELECT 'shared', MAX(`id`), CAST(strftime('%s', 'now') AS integer) * 1000
-FROM `model_versions`
-WHERE `model_name` = 'overnight_v1' AND `scope` = 'shared'
-HAVING MAX(`id`) IS NOT NULL;
